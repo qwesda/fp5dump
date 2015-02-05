@@ -9,6 +9,14 @@ Supported field types are `TEXT`, `NUMBER`, `DATE`, `TIME`, `CALC`, `SUMMARY`. F
 `CALC` or `SUMMARY` can only be dumped if they are configured to be stored in the file.
 `CONATINER` fields are not (yet) supported. 
 
+
+## Installation
+
+- download or clone this repositiory
+- open a terminal 
+- change to the directory of the repository
+- `python3 setup.py install`
+
 ## Basic usage
 
 `fp5dump [general-options] {action} <file> [action-options]`
