@@ -27,7 +27,8 @@ Supported field types are `TEXT`, `NUMBER`, `DATE`, `TIME`, `CALC`, `SUMMARY`. F
 
 lists the fields in a fp5 file
 
-`fp5dump list-fields database.fp5 [--encoding <encoding>] [--show-unstored] [--include-fields-types <type>]`
+```fp5dump list-fields database.fp5 
+        [--encoding <encoding>] [--show-unstored] [--include-fields-types <type>]`    
 
 **`--include-fields-types <type>`**  
 `type` *one or more of* `TEXT` `NUMBER` `DATE` `TIME` `CALC` `SUMMARY` `GLOBAL` `CONTAINER`  
@@ -52,7 +53,8 @@ shows the number of records in a fp5 file
 
 dumps the data or index blocks of a fp5 file in their logical order
 
-`fp5dump dump-blocks database.fp5 [--output <filename>] [--type <data|index>] [--with-path <path>]`
+```fp5dump dump-blocks database.fp5 
+         [--output <filename>] [--type <data|index>] [--with-path <path>]```
 
 **`-o <filename>` `--output <filename>`**  
 the name of the file the blocks are dumped to  
@@ -72,10 +74,11 @@ e.g. `'03'`, `'03/02'`, `'05/7E46/42'`
 
 dump the records of fp5 file to a psql file
 
-`fp5dump dump-records database.fp5 [--output <filename>] [--encoding <encoding>] [--progress]
-         [--include-fields <name>] [--include-fields-like <regex>] 
-         [--ignore-fields <name>] [--ignore-fields-like <regex>] 
-         [--ignore-field-types <type>]`
+```fp5dump dump-records database.fp5 
+        [--output <filename>] [--encoding <encoding>] [--progress]
+        [--include-fields <name>] [--include-fields-like <regex>] 
+        [--ignore-fields <name>] [--ignore-fields-like <regex>] 
+        [--ignore-field-types <type>]```
 
 **`-o <filename>` `--output <filename>`**  
 the name of the file the blocks are dumped to
