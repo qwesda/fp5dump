@@ -1,6 +1,6 @@
 # Fp5Dump
 
-Fp5Dump allows you to parse, read and export `.fp5` files to postgres `.psql` files.
+Fp5Dump allows you to parse, read and export FileMaker `.fp5` files to postgres `.psql` files.
  
 Since FileMaker 5/6 stores all values as strings and does not enforce a particular 
 format for dates/numbers all fields will be dumped as `TEXT` or `TEXT[]` for *repeated fields*.
