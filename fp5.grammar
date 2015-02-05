@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ufwb version="1.9">
+    <grammar name="FileMaker 5.1" start="id:35" author="Daniel Schwarz" email="dan@butter.sh" fileextension="fp5" complete="yes">
+        <description>Grammar for fp5 files used in project: 
+https://github.com/qwesda/Fp5Dump</description>
+        <structure name="FileMaker fp5" id="35" encoding="macintosh" endian="big" signed="no">
+            <structref name="Header" id="37" repeatmin="0" structure="id:36"/>
+            <structure name="Chunks" id="38" repeatmax="unlimited">
+                <structref name="Chunk" id="40" fillcolor="FEFFFF" repeatmin="0" structure="id:39"/>
+                <binary name="NULL" id="41" strokecolor="FEFFFF" fillcolor="FEFFFF" repeatmin="0" repeatmax="-1" length="1">
+                    <fixedvalues>
+                        <fixedvalue name="0x00" value="00"/>
+                    </fixedvalues>
+                </binary>
+            </structure>
+        </structure>
+        <structure name="Header" id="36" length="2048" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="MAGICK" mustmatch="yes" id="44" length="15">
+                <fixedvalues>
+                    <fixedvalue name="MAGICK" value="0001000000020001000500020002C0"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x00 x 459" mustmatch="yes" id="45" length="459">
+                <fixedvalues>
+                    <fixedvalue name="ZEROES" value="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+                </fixedvalues>
+            </binary>
+            <binary name="COPYRIGHT" mustmatch="yes" id="46" length="37">
+                <fixedvalues>
+                    <fixedvalue name="COPYRIGHT" value="20436F7079726967687420313938342D323030312046696C654D616B65722C20496E632E20"/>
+                </fixedvalues>
+            </binary>
+            <binary name="STUFF" mustmatch="yes" id="47" length="14">
+                <fixedvalues>
+                    <fixedvalue name="STUFF" value="000000000000000001001D000E00"/>
+                </fixedvalues>
+            </binary>
+            <binary name="HBAM2016AUG95" mustmatch="yes" id="48" length="13">
+                <fixedvalues>
+                    <fixedvalue name="HBAM2016AUG95" value="4842414D323031364155473935"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0xC1" mustmatch="yes" id="49" length="1">
+                <fixedvalues>
+                    <fixedvalue name="C1" value="C1"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x02" mustmatch="yes" id="50" length="1">
+                <fixedvalues>
+                    <fixedvalue name="02" value="02"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x48" mustmatch="yes" id="51" length="1">
+                <fixedvalues>
+                    <fixedvalue name="48" value="48"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x07" mustmatch="yes" id="52" length="1">
+                <fixedvalues>
+                    <fixedvalue name="07" value="07"/>
+                </fixedvalues>
+            </binary>
+            <binary name="Pro 5.0" mustmatch="yes" id="53" length="7">
+                <fixedvalues>
+                    <fixedvalue name="Pro 5.0" value="50726F20352E30"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0xC0 x 2" mustmatch="yes" id="54" length="2">
+                <fixedvalues>
+                    <fixedvalue name="C0" value="C0C0"/>
+                </fixedvalues>
+            </binary>
+        </structure>
+        <structure name="Chunk" id="39" length="1024" alignment="1024" repeatmax="unlimited" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="Flag1" id="56" fillcolor="C0C0C0" length="1"/>
+            <binary name="Flag2" id="57" fillcolor="C0C0C0" length="1"/>
+            <number name="Index_A" id="58" fillcolor="C0C0C0" type="integer" length="4"/>
+            <number name="Index_B" id="59" fillcolor="C0C0C0" type="integer" length="4"/>
+            <binary name="Flag3" id="60" fillcolor="FF89D8" length="1"/>
+            <number name="Type" mustmatch="yes" id="61" fillcolor="00FA92" type="integer" length="1"/>
+            <number name="ChunkLength" id="62" fillcolor="D5D5D5" type="integer" length="2"/>
+            <structure name="Payload" id="63" length="ChunkLength">
+                <structref name="Chunk Payload" id="65" repeatmax="-1" structure="id:64"/>
+            </structure>
+        </structure>
+        <structure name="Chunk Payload" id="64" length="0" encoding="ISO_8859-1:1987" endian="big" signed="no" fillcolor="FEFFFF" order="variable">
+            <structref name="REF + Data Long" id="69" repeatmin="0" structure="id:68"/>
+            <structref name="REF + DATA" id="71" repeatmin="0" structure="id:70"/>
+            <structref name="Data 0x81 - 0xBF" id="73" repeatmin="0" structure="id:72"/>
+            <structref name="Data 0xCX - 0xFC" id="75" repeatmin="0" structure="id:74"/>
+            <structref name="0xC0" id="77" repeatmin="0" structure="id:76"/>
+        </structure>
+        <structure name="0x00" id="79" length="0" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="0x00" mustmatch="yes" id="80" strokecolor="797979" fillcolor="FFD478" length="1">
+                <fixedvalues>
+                    <fixedvalue name="0x00" value="00"/>
+                </fixedvalues>
+            </binary>
+        </structure>
+        <structure name="0xC0" id="76" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="0xC0" mustmatch="yes" id="82" fillcolor="D4FB78" length="1">
+                <fixedvalues>
+                    <fixedvalue name="0xC0" value="C0"/>
+                </fixedvalues>
+            </binary>
+        </structure>
+        <structure name="Data 0xC1 - 0xFE" id="74" encoding="ISO_8859-1:1987" endian="big" signed="no" fillcolor="72FA78">
+            <number name="Length" mustmatch="yes" id="84" fillcolor="D783FF" type="integer" length="1" display="hex" minval="0xC1" maxval="0xFE"/>
+            <binary name="Data" id="85" fillcolor="75D5FF" length="Length - 192"/>
+        </structure>
+        <structure name="Field Ref Simple" id="87" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <number name="ID" mustmatch="yes" id="88" fillcolor="FFD478" type="integer" length="1" minval="64" maxval="127"/>
+        </structure>
+        <structure name="Field Ref Long" id="90" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <number name="Length" mustmatch="yes" id="91" fillcolor="FF89D8" type="integer" length="1" minval="1" maxval="63"/>
+            <binary name="ID" id="92" fillcolor="FFD478" length="Length"/>
+        </structure>
+        <structure name="Field Ref" id="94" encoding="ISO_8859-1:1987" endian="big" signed="no" order="variable">
+            <structref name="0x00" id="95" repeatmin="0" structure="id:79"/>
+            <structref name="Field Ref Simple" id="96" repeatmin="0" structure="id:87"/>
+            <structref name="Field Ref Long" id="97" repeatmin="0" structure="id:90"/>
+        </structure>
+        <structure name="REF + DATA" id="70" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <structref name="Field Ref" id="99" structure="id:94"/>
+            <number name="Length" id="100" fillcolor="FF89D8" type="integer" length="1"/>
+            <binary name="Data" id="101" fillcolor="929292" length="Length"/>
+        </structure>
+        <structure name="REF + Data Long" id="68" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="0xFF" mustmatch="yes" id="103" fillcolor="FFD478" length="1">
+                <fixedvalues>
+                    <fixedvalue name="0xFF" value="FF"/>
+                </fixedvalues>
+            </binary>
+            <structref name="Field Ref" id="104" structure="id:94"/>
+            <number name="Length" id="105" fillcolor="FFD478" type="integer" length="2"/>
+            <binary name="Data" id="106" fillcolor="929292" length="Length"/>
+        </structure>
+        <structure name="Data 0x81 - 0xBF" id="72" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <number name="Length" mustmatch="yes" id="108" fillcolor="FFD478" type="integer" length="1" minval="129" maxval="191"/>
+            <binary name="Data" id="109" fillcolor="929292" length="Length -128"/>
+        </structure>
+    </grammar>
+</ufwb>

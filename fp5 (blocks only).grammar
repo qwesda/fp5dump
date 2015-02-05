@@ -1,0 +1,85 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ufwb version="1.9">
+    <grammar name="FileMaker 5.1 (Block only)" start="id:3" author="Daniel Schwarz" email="dan@butter.sh" fileextension="fp5" complete="yes">
+        <description>Grammar for fp5 files (block level only) used in project: 
+https://github.com/qwesda/Fp5Dump</description>
+        <structure name="FileMaker fp5" id="3" encoding="macintosh" endian="big" signed="no">
+            <structref name="Header" id="5" repeatmin="0" structure="id:4"/>
+            <structure name="Chunks" id="6" repeatmax="unlimited">
+                <structref name="Chunk" id="8" fillcolor="FEFFFF" repeatmin="0" structure="id:7"/>
+                <binary name="NULL" id="9" strokecolor="FEFFFF" fillcolor="FEFFFF" repeatmin="0" repeatmax="-1" length="1">
+                    <fixedvalues>
+                        <fixedvalue name="0x00" value="00"/>
+                    </fixedvalues>
+                </binary>
+            </structure>
+        </structure>
+        <structure name="Header" id="4" length="2048" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="MAGICK" mustmatch="yes" id="12" length="15">
+                <fixedvalues>
+                    <fixedvalue name="MAGICK" value="0001000000020001000500020002C0"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x00 x 459" mustmatch="yes" id="13" length="459">
+                <fixedvalues>
+                    <fixedvalue name="ZEROES" value="000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"/>
+                </fixedvalues>
+            </binary>
+            <binary name="COPYRIGHT" mustmatch="yes" id="14" length="37">
+                <fixedvalues>
+                    <fixedvalue name="COPYRIGHT" value="20436F7079726967687420313938342D323030312046696C654D616B65722C20496E632E20"/>
+                </fixedvalues>
+            </binary>
+            <binary name="STUFF" mustmatch="yes" id="15" length="14">
+                <fixedvalues>
+                    <fixedvalue name="STUFF" value="000000000000000001001D000E00"/>
+                </fixedvalues>
+            </binary>
+            <binary name="HBAM2016AUG95" mustmatch="yes" id="16" length="13">
+                <fixedvalues>
+                    <fixedvalue name="HBAM2016AUG95" value="4842414D323031364155473935"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0xC1" mustmatch="yes" id="17" length="1">
+                <fixedvalues>
+                    <fixedvalue name="C1" value="C1"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x02" mustmatch="yes" id="18" length="1">
+                <fixedvalues>
+                    <fixedvalue name="02" value="02"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x48" mustmatch="yes" id="19" length="1">
+                <fixedvalues>
+                    <fixedvalue name="48" value="48"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0x07" mustmatch="yes" id="20" length="1">
+                <fixedvalues>
+                    <fixedvalue name="07" value="07"/>
+                </fixedvalues>
+            </binary>
+            <binary name="Pro 5.0" mustmatch="yes" id="21" length="7">
+                <fixedvalues>
+                    <fixedvalue name="Pro 5.0" value="50726F20352E30"/>
+                </fixedvalues>
+            </binary>
+            <binary name="0xC0 x 2" mustmatch="yes" id="22" length="2">
+                <fixedvalues>
+                    <fixedvalue name="C0" value="C0C0"/>
+                </fixedvalues>
+            </binary>
+        </structure>
+        <structure name="Chunk" id="7" length="1024" alignment="1024" repeatmax="unlimited" encoding="ISO_8859-1:1987" endian="big" signed="no">
+            <binary name="Flag1" id="24" fillcolor="C0C0C0" length="1"/>
+            <binary name="Flag2" id="25" fillcolor="C0C0C0" length="1"/>
+            <number name="Index_A" id="26" fillcolor="C0C0C0" type="integer" length="4"/>
+            <number name="Index_B" id="27" fillcolor="C0C0C0" type="integer" length="4"/>
+            <binary name="Flag3" id="28" fillcolor="C0C0C0" length="1"/>
+            <number name="Type" mustmatch="yes" id="29" fillcolor="8DF900" type="integer" length="1"/>
+            <number name="ChunkLength" id="30" fillcolor="FF9300" type="integer" length="2"/>
+            <binary name="Payload" id="31" fillcolor="FFD478" length="ChunkLength"/>
+        </structure>
+    </grammar>
+</ufwb>
