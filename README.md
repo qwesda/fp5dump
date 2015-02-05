@@ -65,7 +65,7 @@ dumps the data or index blocks of a fp5 file in their logical order
 
 ```
 fp5dump dump-blocks database.fp5 
-         [--output <filename>] [--type <data|index>] [--with-path <path>]
+        [--output <filename>] [--type <data|index>] [--with-path <path>]
 ```
 
 **`-o <filename>` `--output <filename>`**  
