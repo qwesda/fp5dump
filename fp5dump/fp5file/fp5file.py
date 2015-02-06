@@ -281,7 +281,7 @@ class FP5File(object):
                 print("unhandled field id in field type index", field_id)
 
     def get_record_index(self):
-        self.logging.debug("get_field_index")
+        self.logging.debug("get_record_index")
 
         tokens = self.get_data_with_path(b'0D')
 
