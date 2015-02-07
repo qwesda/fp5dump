@@ -288,7 +288,7 @@ class FP5File(object):
             self.records_index = tokens[0].data
             self.records_count = len(self.records_index)
 
-    def insert_records_into_postgres(self, field_ids_to_dump, first_record_to_export=None, table_name=None, psycopg2_connect_string=None, schema=None):
+    def insert_records_into_postgres(self, field_ids_to_dump, first_record_to_export=None, table_name=None, psycopg2_connect_string=None, schema=None, show_progress=False):
         self.logging.info("inserting records")
 
         def create_table():
@@ -307,63 +307,92 @@ class FP5File(object):
 
             conn.commit()
 
+        try:
+            with psycopg2.connect(psycopg2_connect_string) as conn:
+                with conn.cursor() as cursor:
+                    if table_name is None:
+                        table_name = self.db_name
 
-        conn = psycopg2.connect(psycopg2_connect_string)
-        cursor = conn.cursor()
+                    if schema is not None:
+                        cursor.execute('CREATE SCHEMA IF NOT EXISTS "%s";' % schema)
+                        cursor.execute("SET SCHEMA '%s';" % schema)
 
-        if table_name is None:
-            table_name = self.db_name
+                    create_table()
 
-        if schema is not None:
-            cursor.execute("SET SCHEMA '%s';" % schema)
+                    start_time = time.time()
+                    eta_last_updated = start_time
 
-        create_table()
+                    for record_tokens in self.get_sub_data_with_path(b'05', first_sub_record_to_export=first_record_to_export):
+                        record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
+                        record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
 
-        for record_tokens in self.get_sub_data_with_path(b'05', first_sub_record_to_export=first_record_to_export):
-            # record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
-            record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
+                        values = []
+                        fields_present = []
 
-            values = []
-            fields_present = []
+                        for record_token in record_tokens:
+                            if record_path == record_token.path:
+                                field_ref = record_token.field_ref
+                            elif len(record_token.path.split(b'/')) == 3:
+                                field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
+                            else:
+                                field_ref = None
 
-            for record_token in record_tokens:
-                if record_path == record_token.path:
-                    field_ref = record_token.field_ref
-                elif len(record_token.path.split(b'/')) == 3:
-                    field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
-                else:
-                    field_ref = None
+                            if field_ref in field_ids_to_dump:
+                                field = self.fields[field_ref]
 
-                if field_ref in field_ids_to_dump:
-                    field = self.fields[field_ref]
+                                if field.repetitions <= 1:
+                                    fields_present.append(field_ref)
+                                    values.append(record_token.data.decode(self.encoding))
+                                elif field_ref in fields_present:
+                                    values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
+                                else:
+                                    fields_present.append(field_ref)
+                                    values.append([None] * field.repetitions)
+                                    values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
 
-                    if field.repetitions <= 1:
-                        fields_present.append(field_ref)
-                        values.append(record_token.data.decode(self.encoding))
-                    elif field_ref in fields_present:
-                        values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
-                    else:
-                        fields_present.append(field_ref)
-                        values.append([None] * field.repetitions)
-                        values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
+                        if len(fields_present):
+                            fields = list('"' + self.fields[field_id].label + '"' for field_id in fields_present)
 
-            if len(fields_present):
-                fields = list('"' + self.fields[field_id].label + '"' for field_id in fields_present)
+                            statement = 'INSERT INTO "%s" (%s) VALUES (%s)' % (table_name, ", ".join(fields), ("%s, "*len(fields_present))[:-2] )
 
-                statement = 'INSERT INTO "%s" (%s) VALUES (%s)' % (table_name, ", ".join(fields), ("%s, "*len(fields_present))[:-2] )
+                            cursor.execute(statement, values)
 
-                cursor.execute(statement, values)
+                            self.exported_records += 1
 
-                self.exported_records += 1
+                        # flush batch
+                        if self.exported_records % 1000 == 0 or self.exported_records == self.records_count:
+                            conn.commit()
 
-            if self.exported_records % 1000 == 0:
-                conn.commit()
+                        # progress
+                        if show_progress and (time.time() - eta_last_updated >= 1 or self.exported_records == self.records_count):
+                            padding = len(str(self.records_count))
 
-        # self.logging.info("exported %d records from '%s'" % (self.exported_records, self.filename))
+                            eta_last_updated = time.time()
 
-        conn.close()
+                            seconds_elapsed = eta_last_updated - start_time
+                            seconds_remaining = (self.records_count - self.exported_records) * (seconds_elapsed/self.exported_records)
+                            eta_string = " ETA: %d:%02d" % (seconds_remaining//60, seconds_remaining%60)
 
-        # print("exported %d records" % self.exported_records)
+                            formating_string = "%%%dd/%%d" % padding
+                            progress_info = formating_string % (self.exported_records, self.records_count)
+
+                            progress_info += eta_string
+
+                            if self.exported_records < self.records_count:
+                                sys.stdout.write(progress_info)
+                                sys.stdout.flush()
+                                sys.stdout.write('\b' * len(progress_info))
+                            else:
+                                sys.stdout.flush()
+
+        except psycopg2.OperationalError as err:
+            if err.pgerror:
+                self.logging.error(err.pgerror)
+
+            if err.diag:
+                self.logging.error(err)
+
+            return
 
     def dump_records_pgsql(self, field_ids_to_dump, first_record_to_export=None, filename=None, table_name=None, show_progress=False):
         self.logging.info("dumping records")
@@ -494,7 +523,7 @@ class FP5File(object):
             self.exported_records += 1
 
 
-            # flush butches
+            # flush batch
             if self.exported_records % 100 == 0 or self.exported_records == self.records_count:
                 write_batch()
 
