@@ -1,10 +1,13 @@
-import re
+#!/usr/bin/env python3
 
-from setuptools import setup, find_packages
+import re
+import os.path
+
+from setuptools import setup
 
 _version_re = re.compile(r'__version__\s*=\s*\'\s*(\d+\.\d+\.\d+)\s*\'')
 
-with open('fp5dump/__init__.py', 'rb') as f:
+with open(os.path.join(os.path.dirname(__file__), 'fp5dump/__init__.py'), 'rb') as f:
     version = _version_re.search(f.read().decode('utf-8')).group(1)
 
 description = 'A tool for dumping the content on FileMaker .fp5 files'
@@ -17,9 +20,9 @@ setup(
     version=version,
     license='MIT',
     url='https://github.com/qwesda/Fp5Dump',
-    packages=find_packages(),
+    packages=['fp5dump'],
     description=description,
-    long_description=open('README.md').read(),
+    long_description=open(os.path.join(os.path.dirname(__file__), 'README.md')).read(),
     install_requires=[
         'psycopg2 >= 2.5.4'
     ],
@@ -29,13 +32,11 @@ setup(
     ''',
     classifiers=[
         'Intended Audience :: Developers',
-        'License :: OSI Approved :: BSD License',
+        'License :: OSI Approved :: MIT License',
         'Operating System :: Unix',
         'Programming Language :: Python',
         'Programming Language :: Python :: 3',
         'Programming Language :: Python :: 3.4',
         'Topic :: Database'
-        'Topic :: Software Development',
-        'Topic :: Software Development :: Libraries :: Python Modules',
     ]
 )
