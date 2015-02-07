@@ -1,6 +1,5 @@
 import os
 import sys
-import logging
 import struct
 import codecs
 import logging
@@ -11,9 +10,9 @@ from binascii import hexlify, unhexlify
 
 import psycopg2
 
-from fp5dump.fp5file.block import TokenType, Token, decode_vli
-from fp5dump.fp5file.blockchain import BlockChain, BlockChainIter
-from fp5dump.fp5file.datafield import DataField
+from .block import TokenType, Token, decode_vli
+from .blockchain import BlockChain, BlockChainIter
+from .datafield import DataField
 
 class FP5File(object):
     """Wrapper for FP5 file object"""

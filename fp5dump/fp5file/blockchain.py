@@ -2,7 +2,7 @@ from array import array
 import struct
 from binascii import hexlify
 
-from fp5dump.fp5file.block import Block, TokenType
+from .block import Block, TokenType
 
 
 class BlockChainIter(object):

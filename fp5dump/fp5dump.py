@@ -5,7 +5,7 @@ import os
 import argparse
 import logging
 
-from fp5dump.fp5file.fp5file import FP5File
+from .fp5file.fp5file import FP5File
 
 
 def list_fields(args):
