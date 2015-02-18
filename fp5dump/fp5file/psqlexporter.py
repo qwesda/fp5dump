@@ -194,7 +194,7 @@ class PsqlExporter(Exporter):
 
             if self.drop_empty_columns:
                 for export_def in self.export_definition.values():
-                    if export_def not in table_fields_present:
+                    if export_def.field_id not in table_fields_present:
                         output.write('ALTER TABLE "%s" DROP COLUMN  "%s";\n' % (self.table_name, export_def.field.label))
 
         self.reset_locale()

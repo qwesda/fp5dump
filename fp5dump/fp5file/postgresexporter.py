@@ -266,7 +266,7 @@ class PostgresExporter(Exporter):
                 if self.drop_empty_columns and not self.use_existing_table:
                     with conn.cursor() as cursor:
                         for export_def in self.export_definition.values():
-                            if export_def not in table_fields_present:
+                            if export_def.field_id not in table_fields_present:
                                 cursor.execute('ALTER TABLE "%s" DROP COLUMN  "%s";\n' % (self.table_name, export_def.field.label))
 
         except (psycopg2.OperationalError, psycopg2.ProgrammingError) as psycopg_error:
