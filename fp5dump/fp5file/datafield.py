@@ -8,6 +8,7 @@ class DataField(object):
         self.id = id
         self.name = name
         self.label = ""
+        self.label_bytes = b""
         self.type = None
         self.order = None
         self.repetitions = 0
@@ -35,6 +36,27 @@ class DataField(object):
                 return "GLOBAL"
             else:
                 return "UNKNOWN"
+
+        elif attribute == "psql_type":
+            if self.type == 1:
+                return "text"
+            elif self.type == 2:
+                return "numeric"
+            elif self.type == 3:
+                return "date"
+            elif self.type == 4:
+                return "time"
+            elif self.type == 5:
+                return "bytea"
+            elif self.type == 6:
+                return "text"
+            elif self.type == 7:
+                return "text"
+            elif self.type == 8:
+                return "text"
+
+        elif attribute == "psql_cast":
+            return ("::" + self.psql_type + "[]" if self.repetitions > 1 else "")
 
     def __repr__(self):
         return "0x%04X %9s[%2d] %5s '%s'" % (self.id, self.typename, self.repetitions, self.stored, self.label)

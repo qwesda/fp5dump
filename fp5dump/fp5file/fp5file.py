@@ -1,32 +1,46 @@
+from collections import namedtuple, OrderedDict
+import locale
 import os
-import sys
+import re
 import struct
-import codecs
 import logging
-import time
+import yaml
+import codecs
+import yaml.constructor
 
 from array import array
+import parsedatetime as pdt
 from binascii import hexlify, unhexlify
 
-import psycopg2
-
-from .block import TokenType, Token, decode_vli
+from .block import TokenType, decode_vli
 from .blockchain import BlockChain, BlockChainIter
 from .datafield import DataField
+
+from .psqlexporter import PsqlExporter
+from .postgresexporter import PostgresExporter
+
 
 class FP5File(object):
     """Wrapper for FP5 file object"""
 
-    def __init__(self, filename, encoding='latin1'):
+    def __init__(self, filename, encoding=None, locale=None):
         super(FP5File, self).__init__()
 
         self.logging = logging.getLogger('fp5dump.fp5file.fp5file')
 
         self.filename = filename
 
-        self.encoding = encoding
-        self.basename = os.path.basename(filename)
-        self.db_name = os.path.basename(filename)
+        self.locale = locale
+        self.encoding = encoding if encoding else 'latin1'
+        self.ptd_parser = pdt.Calendar(pdt.Constants())
+
+        self.basename = os.path.splitext(os.path.basename(filename))[0]
+        self.dirname = os.path.dirname(os.path.abspath(os.path.expanduser(filename)))
+        self.db_name = self.basename
+
+        self.export_definition = None
+
+        self.error_report_columns = []
 
         self.block_chains = []
         self.block_chain_levels = 0
@@ -35,17 +49,28 @@ class FP5File(object):
         self.index = None
         self.data = None
 
+        self.enums = []
+
+        self.file_size = 0
+
         self.records_index = []
         self.records_count = 0
-        self.exported_records = 0
+
+        self.version_string = ""
+        self.filename_string = ""
+        self.server_addr_string = ""
 
         self.block_prev_id_to_block_pos = None
         self.block_id_to_block_pos = None
 
-        self.file = open(self.filename, "rb", buffering=0)
+        self.logging.info("opening %s" % self.basename)
+        print(os.path.abspath(os.path.expanduser(self.filename)))
+
+        self.file = open(os.path.abspath(os.path.expanduser(self.filename)), "rb", buffering=0)
 
         self.largest_block_id = 0x00000000
 
+        self.read_header()
         self.get_blocks()
         self.order_block_indices()
         self.get_field_index()
@@ -63,18 +88,331 @@ class FP5File(object):
         if self.file:
             self.file.close()
 
-    def get_blocks(self):
-        self.logging.info("opening %s" % self.basename)
+    def read_header(self):
+        if not self.read_header_fp5():
+            if not self.read_header_fp3():
+                self.logging.error("could not read a valid fp5 or fp3 header")
 
-        file_size = os.path.getsize(self.filename)
+    def read_header_fp3(self):
+        self.file_size = os.path.getsize(self.filename)
 
-        if file_size % 0x400 != 0:
+        if self.file_size % 0x400 != 0:
             raise Exception("File size is not a multiple of 0x400")
 
+        self.file.seek(0)
+        magic = self.file.read(0x0F)
+
+        unknown1 = self.file.read(0x1F1)
+        unknown2 = self.file.read(0x0D)
+        hbam = self.file.read(0x0D)
+        unknown3 = self.file.read(0x03)
+
+        version_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.version_string = self.file.read(version_string_length)
+
+        unknown4 = self.file.read(0x02)
+        unknown5 = self.file.read(0x1BA - version_string_length)
+        copyright_string = self.file.read(0x26)
+
+        filename_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.filename_string = self.file.read(filename_string_length)
+        unknown6 = self.file.read(0xFF - filename_string_length)
+
+        server_addr_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.server_addr_string = self.file.read(server_addr_string_length)
+        unknown7 = self.file.read(0x2FF - server_addr_string_length)
+
+        if magic != unhexlify(b'0001000000020001000500020002C0'):
+            self.logging.error("unexpected magic number %s" % magic)
+            return False
+
+        if self.version_string != b'Pro 3.0':
+            self.logging.error("unexpected version string %s\n"
+                               "if this string seems legitimate please report this as an issue" % self.version_string)
+            return False
+
+        return True
+
+    def read_header_fp5(self):
+        self.file_size = os.path.getsize(self.filename)
+
+        if self.file_size % 0x400 != 0:
+            raise Exception("File size is not a multiple of 0x400")
+
+        self.file.seek(0)
+        magic = self.file.read(0x0F)
+
+        unknown1 = self.file.read(0x1CB)
+        copyright_string = self.file.read(0x25)
+        unknown2 = self.file.read(0x0E)
+        hbam = self.file.read(0x0D)
+        unknown3 = self.file.read(0x03)
+
+        version_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.version_string = self.file.read(version_string_length)
+        version_string_padding = self.file.read(0x1E2 - version_string_length)
+
+        filename_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.filename_string = self.file.read(filename_string_length)
+        filename_string_padding = self.file.read(0xFF - filename_string_length)
+
+        server_addr_string_length = int.from_bytes(self.file.read(0x01), byteorder='big')
+        self.server_addr_string = self.file.read(server_addr_string_length)
+        server_addr_string_length = self.file.read(0xBF - server_addr_string_length)
+
+        unknown4 = self.file.read(0x0C)
+        unknown5 = self.file.read(0x234)
+
+        if magic != unhexlify(b'0001000000020001000500020002C0'):
+            self.logging.error("unexpected magic number %s" % magic)
+
+            return False
+
+        if self.version_string != b'Pro 5.0':
+            if self.version_string != b'Pro 3.0':
+                self.logging.error("unexpected version string %s\n"
+                                   "if this string seems legitimate please report this as an issue" % self.version_string)
+            return False
+
+        return True
+
+    def generate_export_definition(self,
+                                   include_fields=[],
+                                   include_fields_like=[],
+                                   ignore_fields=[],
+                                   ignore_fields_like=[],
+                                   ignore_field_types=['GLOBAL', 'CONTAINER'],
+                                   treat_all_as_string=False,
+                                   use_locale="en_US",
+                                   encoding="latin1"):
+
+        try:
+            locale.setlocale(locale.LC_NUMERIC, use_locale)
+            locale.resetlocale(locale.LC_NUMERIC)
+
+            self.locale = use_locale
+
+        except locale.Error:
+            self.logging.error("invalid locale '%s' specified" % use_locale)
+
+            return None
+
+        try:
+            codecs.lookup(encoding)
+
+            if encoding != self.encoding:
+                self.encoding = encoding
+
+                for field in self.fields.values():
+                    field.label = field.label_bytes.decode(self.encoding)
+
+        except LookupError:
+            self.logging.error("invalid encoding '%s' specified" % encoding)
+
+            return None
+
+        export_definition = OrderedDict()
+
+        field_pos = 2
+        for field_id in sorted(self.fields.keys()):
+            field = self.fields[field_id]
+
+            include = False
+            exclude = False
+
+            for include_fields_name in include_fields:
+                if include_fields_name == field.label:
+                    include = True
+
+            for include_field_reg in include_fields_like:
+                if re.search(include_field_reg, field.label):
+                    include = True
+
+            if not include_fields and not include_fields_like:
+                include = True
+
+            for ignore_field_name in ignore_fields:
+                if ignore_field_name == field.label:
+                    exclude = True
+
+            for ignore_field_reg in ignore_fields_like:
+                if re.search(ignore_field_reg, field.label):
+                    exclude = True
+
+            if field.typename in ignore_field_types:
+                exclude = True
+
+            if not field.stored:
+                exclude = True
+
+            if include and not exclude:
+                export_definition[field_id] = FieldExportDefinition(field_id, field,
+                                                                    field.psql_type if not treat_all_as_string else "text",
+                                                                    field.psql_type if not treat_all_as_string else "text",
+                                                                    field.psql_cast if not treat_all_as_string else ("::text" "[]" if self.repetitions == 0 else ":text[]"),
+                                                                    field.repetitions > 1, False, None, False, None, field_pos)
+
+                field_pos += 1
+
+        return export_definition
+
+    def load_export_definition(self, yaml_file_path):
+        export_definition = OrderedDict()
+
+        with open(os.path.abspath(os.path.expanduser(yaml_file_path)), 'r') as f:
+            yaml_definition = yaml.load(f, __OrderedDictYAMLLoader__)
+
+        if yaml_definition:
+            if 'name' in yaml_definition:
+                self.db_name = yaml_definition['name']
+
+            if 'locale' in yaml_definition:
+                try:
+                    locale.setlocale(locale.LC_NUMERIC, yaml_definition['locale'])
+                    locale.resetlocale(locale.LC_NUMERIC)
+
+                    self.locale = yaml_definition['locale']
+
+                except locale.Error:
+                    self.logging.error("invalid locale '%s' specified" % yaml_definition['locale'])
+
+                    return None
+
+
+            if 'encoding' in yaml_definition:
+                try:
+                    codecs.lookup(yaml_definition['encoding'])
+
+                    if yaml_definition['encoding'] != self.encoding:
+                        self.encoding = yaml_definition['encoding']
+
+                        for field in self.fields.values():
+                            field.label = field.label_bytes.decode(self.encoding)
+
+                except LookupError:
+                    self.logging.error("invalid encoding '%s' specified in export definition yaml" % (
+                        yaml_definition['encoding']))
+
+                    return None
+
+            field_pos = 2
+            for (column_name, column_type) in yaml_definition['columns'].items():
+                column_type = column_type.strip()
+
+                if column_type.startswith("bool") and not column_type.startswith("boolean"):
+                    column_type = "boolean%s" % column_type[4:]
+                elif column_type.startswith("int") and not column_type.startswith("integer"):
+                    column_type = "integer%s" % column_type[3:]
+
+                    yaml_definition['columns'][column_name] = column_type
+
+                for field_id in sorted(self.fields.keys()):
+                    field = self.fields[field_id]
+
+                    if field.stored and field.label == column_name:
+                        field_def = {
+                            "field_id": field_id,
+                            "type": column_type,
+                            "psql_type": None,
+                            "psql_cast": "",
+                            "is_array": False,
+                            "split": False,
+                            "subscript": None,
+                            "is_enum": False,
+                            "enum": None,
+                            "pos": field_pos
+                        }
+
+                        subscript_check = re.compile('^(.+)\[(\d+)\]$')
+                        enum_check = re.compile('^enum\("(.+)"\)$')
+
+                        if column_type.endswith("[]"):
+                            if field.repetitions > 1:
+                                field_def['psql_type'] = column_type[:-2]
+                                field_def['is_array'] = True
+                            else:
+                                field_def['psql_type'] = column_type[:-2]
+                                field_def['split'] = True
+                                field_def['is_array'] = True
+
+                        elif subscript_check.match(column_type):
+                            if field.repetitions > 1:
+                                (field_def['psql_type'], field_def['subscript']) = \
+                                    subscript_check.match(column_type).groups()
+                            else:
+                                self.logging.warning("subscript specified (%s) for non array field %s" % (
+                                    field_def['type'], field.label))
+
+                                field_def['psql_type'] = subscript_check.match(column_type).group(1)
+                        else:
+                            if field.repetitions > 1:
+                                self.logging.warning(
+                                    "%s is an array field of length %d. only first value will be exported" % (
+                                        field.label, field.repetitions))
+
+                                field_def['psql_type'] = column_type
+                                field_def['subscript'] = 0
+                            else:
+                                field_def['psql_type'] = column_type
+
+                        if enum_check.match(field_def['psql_type']):
+                            field_def['psql_type'] = enum_check.match(field_def['psql_type']).group(1)
+                            field_def['is_enum'] = True
+
+                            if 'enums' not in yaml_definition or \
+                                    ('enums' in yaml_definition and
+                                        field_def['psql_type'] not in yaml_definition['enums']):
+                                self.logging.error(
+                                    "undefined enum '%s' found in export definition for field '%s'" % (
+                                        field_def['psql_type'], field.label))
+
+                                return None
+
+                            field_def['enum'] = {}
+
+                            for enum_key, enum_values in yaml_definition['enums'][field_def['psql_type']].items():
+                                field_def['enum'][enum_key] = \
+                                    [(v.upper() if v is not None else None) for v in (enum_values if type(enum_values) is list else [enum_values])]
+
+                            if '*' in field_def['enum']:
+                                field_def['enum']['*'] = field_def['enum']['*'][0]
+
+                        elif field_def['psql_type'] not in ['integer', 'numeric', 'text', 'boolean', 'date', 'uuid']:
+                            self.logging.error("unexpected type '%s' found in export definition for field '%s'" % (
+                                field_def['psql_type'], field.label))
+
+                            return None
+
+                        if field_def['is_array'] and field_def['is_enum']:
+                            field_def['psql_cast'] = "::\"%s\"[]" % (field_def['psql_type'])
+                        elif field_def['is_enum']:
+                            field_def['psql_cast'] = "::\"%s\"" % (field_def['psql_type'])
+                        elif field_def['is_array']:
+                            field_def['psql_cast'] = "::%s[]" % (field_def['psql_type'])
+
+                        export_definition[field_def['field_id']] = FieldExportDefinition(
+                                field_def['field_id'], field,
+                                field_def['type'], field_def['psql_type'], field_def['psql_cast'],
+                                field_def['is_array'], field_def['split'], field_def['subscript'],
+                                field_def['is_enum'], field_def['enum'], field_def['pos'])
+
+                        field_pos += 1
+
+                self.error_report_columns = []
+
+                if 'error_report_columns' in yaml_definition:
+                    for error_report_column_label in yaml_definition['error_report_columns']:
+                        for field_id in sorted(self.fields.keys()):
+                            if error_report_column_label == self.fields[field_id].label and field_id in export_definition:
+                                self.error_report_columns.append(export_definition[field_id])
+
+        return export_definition
+
+    def get_blocks(self):
         try:
             pos = 0x800
 
-            while pos < file_size:
+            while pos < self.file_size:
                 self.file.seek(pos)
 
                 (deleted_flag, level, prev_id, next_id) = struct.unpack_from(">BBII", self.file.read(10))
@@ -101,12 +439,14 @@ class FP5File(object):
                         if self.block_prev_id_to_block_pos[prev_id] == 0x00000000:
                             self.block_prev_id_to_block_pos[prev_id] = pos
                         else:
-                            print("block with duplicate prev_id 0x%08X found for level %d" % (prev_id, level))
+                            self.logging.error("block with duplicate prev_id 0x%08X found for level %d" % (prev_id, level))
 
                 pos += 0x400
 
         except Exception as e:
             raise e
+
+        self.logging.info("blocks read")
 
     def order_block_indices(self):
         for level in reversed(range(0, self.block_chain_levels + 1)):
@@ -140,7 +480,7 @@ class FP5File(object):
         self.logging.info("dump data blocks")
 
         if not output_filename:
-            output_filename = self.filename + ".index"
+            output_filename = self.filename + ".data"
 
         with open(output_filename, "wb") as file:
             for block in self.data:
@@ -172,7 +512,8 @@ class FP5File(object):
         tokens = []
 
         for token in self.data.tokens(search_path):
-            tokens.append(token)
+            if token.type != TokenType.xC0:
+                tokens.append(token)
 
         return tokens
 
@@ -205,18 +546,22 @@ class FP5File(object):
             if first_sub_record_to_export is not None and first_sub_record_to_export > sub_data_key:
                 continue
 
-            if sub_data_key != last_sub_data_key:
+            if token.type == TokenType.xC0 and len(token_path_split) == search_path_split_len + 1:
                 if last_sub_data_key is not None and last_sub_data_start < len(tokens):
-                    yield tokens[last_sub_data_start:]
+                    yield tokens[last_sub_data_start:] + [token]
 
                     del tokens[last_sub_data_start:]
+                else:
+                    yield [token]
 
+            if sub_data_key != last_sub_data_key:
                 if sub_data_key is not None:
                     last_sub_data_start = len(tokens)
 
                 last_sub_data_key = sub_data_key
 
-            tokens.append(token)
+            if token.type != TokenType.xC0:
+                tokens.append(token)
 
         if last_sub_data_key is not None and last_sub_data_start < len(tokens):
             yield tokens[last_sub_data_start:]
@@ -264,12 +609,12 @@ class FP5File(object):
                 field = self.fields[field_id]
 
                 for option_token in field_option_tokens:
-
                     token_sub_path_split = option_token.path.split(b'/')[3:]
 
                     if len(token_sub_path_split) == 0:
                         if option_token.field_ref == 1:
                             field.label = option_token.data.decode(self.encoding)
+                            field.label_bytes = option_token.data
 
                         if option_token.field_ref == 2:
                             field.stored = option_token.data[0] <= 0x02
@@ -288,266 +633,95 @@ class FP5File(object):
             self.records_index = tokens[0].data
             self.records_count = len(self.records_index)
 
-    def insert_records_into_postgres(self, field_ids_to_dump, first_record_to_export=None, table_name=None, psycopg2_connect_string=None, schema=None, show_progress=False):
+    def insert_records_into_postgres(self, fields_to_dump, first_record_to_export=None, table_name=None,
+                                     psycopg2_connect_string=None, schema=None, show_progress=False,
+                                     drop_empty_columns=False):
         self.logging.info("inserting records")
 
-        def create_table():
-            pgsql_fields = []
+        exporter = PostgresExporter(self, fields_to_dump,
+                                    schema, psycopg2_connect_string,
+                                    first_record_to_export=first_record_to_export,
+                                    use_existing_table=False,
+                                    table_name=table_name,
+                                    drop_empty_columns=drop_empty_columns,
+                                    show_progress=show_progress)
+        exporter.run()
 
-            for field_id_to_export in field_ids_to_dump:
-                field_to_export = self.fields[field_id_to_export]
+        if exporter.sampled_errors_for_fields:
+            print(exporter.format_errors())
 
-                if field_to_export.repetitions == 1:
-                    pgsql_fields.append('    "%s" text' % field_to_export.label)
-                else:
-                    pgsql_fields.append('    "%s" text[]' % field_to_export.label)
+    def update_records_into_postgres(self, fields_to_dump, first_record_to_export=None, table_name=None,
+                                     psycopg2_connect_string=None, schema=None, show_progress=False,
+                                     drop_empty_columns=False):
+        self.logging.info("updating records")
 
-            cursor.execute('DROP TABLE IF EXISTS "%s";' % table_name)
-            cursor.execute('CREATE TABLE IF NOT EXISTS "%s" (\n%s\n);\n\n' % (table_name, ',\n'.join(pgsql_fields)))
+        exporter = PostgresExporter(self, fields_to_dump,
+                                    schema, psycopg2_connect_string,
+                                    first_record_to_export=first_record_to_export,
+                                    use_existing_table=True,
+                                    table_name=table_name,
+                                    drop_empty_columns=drop_empty_columns,
+                                    show_progress=show_progress)
+        exporter.run()
 
-            conn.commit()
+        if exporter.sampled_errors_for_fields:
+            print(exporter.format_errors())
 
-        try:
-            with psycopg2.connect(psycopg2_connect_string) as conn:
-                with conn.cursor() as cursor:
-                    if table_name is None:
-                        table_name = self.db_name
-
-                    if schema is not None:
-                        cursor.execute('CREATE SCHEMA IF NOT EXISTS "%s";' % schema)
-                        cursor.execute("SET SCHEMA '%s';" % schema)
-
-                    create_table()
-
-                    start_time = time.time()
-                    eta_last_updated = start_time
-
-                    for record_tokens in self.get_sub_data_with_path(b'05', first_sub_record_to_export=first_record_to_export):
-                        record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
-                        record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
-
-                        values = []
-                        fields_present = []
-
-                        for record_token in record_tokens:
-                            if record_path == record_token.path:
-                                field_ref = record_token.field_ref
-                            elif len(record_token.path.split(b'/')) == 3:
-                                field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
-                            else:
-                                field_ref = None
-
-                            if field_ref in field_ids_to_dump:
-                                field = self.fields[field_ref]
-
-                                if field.repetitions <= 1:
-                                    fields_present.append(field_ref)
-                                    values.append(record_token.data.decode(self.encoding))
-                                elif field_ref in fields_present:
-                                    values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
-                                else:
-                                    fields_present.append(field_ref)
-                                    values.append([None] * field.repetitions)
-                                    values[fields_present.index(field_ref)][record_token.field_sub_ref-1] = record_token.data.decode(self.encoding)
-
-                        if len(fields_present):
-                            fields = list('"' + self.fields[field_id].label + '"' for field_id in fields_present)
-
-                            statement = 'INSERT INTO "%s" (%s) VALUES (%s)' % (table_name, ", ".join(fields), ("%s, "*len(fields_present))[:-2] )
-
-                            cursor.execute(statement, values)
-
-                            self.exported_records += 1
-
-                        # flush batch
-                        if self.exported_records % 1000 == 0 or self.exported_records == self.records_count:
-                            conn.commit()
-
-                        # progress
-                        if show_progress and (time.time() - eta_last_updated >= 1 or self.exported_records == self.records_count):
-                            padding = len(str(self.records_count))
-
-                            eta_last_updated = time.time()
-
-                            seconds_elapsed = eta_last_updated - start_time
-                            seconds_remaining = (self.records_count - self.exported_records) * (seconds_elapsed/self.exported_records)
-                            eta_string = " ETA: %d:%02d" % (seconds_remaining//60, seconds_remaining%60)
-
-                            formating_string = "%%%dd/%%d" % padding
-                            progress_info = formating_string % (self.exported_records, self.records_count)
-
-                            progress_info += eta_string
-
-                            if self.exported_records < self.records_count:
-                                sys.stdout.write(progress_info)
-                                sys.stdout.flush()
-                                sys.stdout.write('\b' * len(progress_info))
-                            else:
-                                sys.stdout.flush()
-
-        except psycopg2.OperationalError as err:
-            if err.pgerror:
-                self.logging.error(err.pgerror)
-
-            if err.diag:
-                self.logging.error(err)
-
-            return
-
-    def dump_records_pgsql(self, field_ids_to_dump, first_record_to_export=None, filename=None, table_name=None, show_progress=False):
+    def dump_records_pgsql(self, fields_to_dump, first_record_to_export=None, filename=None, table_name=None,
+                           show_progress=False, drop_empty_columns=False):
         self.logging.info("dumping records")
 
-        def write_batch():
-            fields_in_batch = [self.fields[field_id] for field_id in field_ids_to_dump if field_id in batch_used_columns]
-            field_ids_in_batch = [field_id for field_id in field_ids_to_dump if field_id in batch_used_columns]
-
-            fields_not_in_table = [field for field in fields_in_batch if field.id not in table_used_columns]
-
-            if len(table_used_columns) == 0:
-                output.write('DROP TABLE IF EXISTS "%s";\nCREATE TABLE IF NOT EXISTS "%s" (%s);' % (table_name, table_name,
-                    ", ".join(['\n\t"%s" %s' % (field.label, "text" if field.repetitions <= 1 else "text[]")
-                        for field in fields_not_in_table ])))
-
-            elif len(fields_not_in_table) > 0:
-                output.write('\n\nALTER TABLE "%s" %s;' % (table_name,
-                    ", ".join(['\n\tADD COLUMN "%s" %s' % (field.label, "text" if field.repetitions <= 1 else "text[]")
-                        for field in fields_not_in_table ])))
-
-            output.write('\n\nINSERT INTO "%s" (\n\t' % table_name)
-            output.write( ', \n\t'.join('"%s"' % field.label for field in fields_in_batch ) )
-            output.write('\n) VALUES (')
-
-            batch_count = len(batch)
-            batch_counter = 0
-
-            for (fields_present, data_tokens) in batch:
-                for field in fields_in_batch:
-                    is_last_data_token = field is fields_in_batch[-1]
-
-                    if field.id in fields_present:
-                        data_token = data_tokens[fields_present.index(field.id)]
-
-                        if field.repetitions <= 1:
-                            output.write("\n\tE'")
-                            output.write(data_token.data.decode(self.encoding).translate(trans))
-                            output.write("'," if not is_last_data_token else "'")
-                        else:
-                            output.write('\n\tARRAY[')
-
-                            for i, sub_data in enumerate(data_token.data):
-                                if sub_data:
-                                    output.write("E'")
-                                    output.write(sub_data.decode(self.encoding).translate(trans))
-                                    output.write("'")
-                                else:
-                                    output.write("NULL")
-
-                                output.write(", " if i != field.repetitions-1 else '')
-
-                            output.write('],' if not is_last_data_token else ']')
-                    else:
-                        if field.repetitions <= 1:
-                            output.write('\n\tNULL,' if not is_last_data_token else '\n\tNULL')
-                        else:
-                            output.write('\n\tARRAY[')
-                            output.write(", ".join(["NULL"] * field.repetitions))
-                            output.write('],' if not is_last_data_token else ']')
-
-                batch_counter += 1
-
-                output.write('\n), (' if batch_counter != batch_count else '\n);')
-
-            table_used_columns.update(batch_used_columns)
-            batch_used_columns.clear()
-            batch.clear()
-
-        if table_name is None:
-            table_name = self.db_name
-
         if filename is None:
-            filename = self.basename + '.psql'
+            filename = os.path.join(self.dirname, self.basename + '.psql')
 
-        output = codecs.open(filename, 'wb', encoding="utf8", buffering=0x800000)
+        exporter = PsqlExporter(self, fields_to_dump, filename,
+                                first_record_to_export=first_record_to_export,
+                                table_name=table_name,
+                                drop_empty_columns=drop_empty_columns,
+                                show_progress=show_progress)
+        exporter.run()
 
-        start_time = time.time()
-        eta_last_updated = start_time
-
-        trans = "".maketrans({
-            '\\': '\\\\',
-            '\'': '\\\'',
-            '\b': '\\b',
-            '\f': '\\f',
-            '\n': '\\n',
-            '\r': '\\r',
-            '\t': '\\t',
-            '\x00': ''
-        })
-
-        batch = []
-        table_used_columns = set()
-        batch_used_columns = set()
-
-        for record_tokens in self.get_sub_data_with_path(b'05', first_sub_record_to_export=first_record_to_export):
-            record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
-            record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
-
-            data_tokens = []
-            fields_present = []
-
-            for record_token in record_tokens:
-                if record_path == record_token.path:
-                    field_ref = record_token.field_ref
-                elif len(record_token.path.split(b'/')) == 3:
-                    field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
-                else:
-                    field_ref = None
-
-                if field_ref in field_ids_to_dump:
-                    field = self.fields[field_ref]
-
-                    if field.repetitions <= 1:
-                        fields_present.append(field_ref)
-                        data_tokens.append(record_token)
-                    elif field_ref in fields_present:
-                        data_tokens[fields_present.index(field_ref)].data[record_token.field_sub_ref-1] = record_token.data
-                    else:
-                        fields_present.append(field_ref)
-                        data_tokens.append(Token(record_token.type, record_token.path, record_token.field_ref,
-                                                 record_token.field_sub_ref, record_token.field_ref_bin,
-                                                 [None] * field.repetitions))
-                        data_tokens[fields_present.index(field_ref)].data[record_token.field_sub_ref-1] = record_token.data
-
-            batch.append((fields_present, data_tokens))
-            batch_used_columns.update(fields_present)
-
-            self.exported_records += 1
+        if exporter.sampled_errors_for_fields:
+            print(exporter.format_errors())
 
 
-            # flush batch
-            if self.exported_records % 100 == 0 or self.exported_records == self.records_count:
-                write_batch()
+FieldExportDefinition = namedtuple('FieldExportDefinition', ["field_id", "field", "type", "psql_type", "psql_cast",
+                                                             "is_array", "split", "subscript",
+                                                             "is_enum", "enum", "pos"])
 
 
-            # progress
-            if show_progress and (time.time() - eta_last_updated >= 1 or self.exported_records == self.records_count):
-                padding = len(str(self.records_count))
+class __OrderedDictYAMLLoader__(yaml.Loader):
+    """
+    A YAML loader that loads mappings into ordered dictionaries.
+    """
 
-                eta_last_updated = time.time()
+    def __init__(self, *args, **kwargs):
+        yaml.Loader.__init__(self, *args, **kwargs)
 
-                seconds_elapsed = eta_last_updated - start_time
-                seconds_remaining = (self.records_count - self.exported_records) * (seconds_elapsed/self.exported_records)
-                eta_string = " ETA: %d:%02d" % (seconds_remaining//60, seconds_remaining%60)
+        self.add_constructor(u'tag:yaml.org,2002:map', type(self).construct_yaml_map)
+        self.add_constructor(u'tag:yaml.org,2002:omap', type(self).construct_yaml_map)
 
-                formating_string = "%%%dd/%%d" % padding
-                progress_info = formating_string % (self.exported_records, self.records_count)
+    def construct_yaml_map(self, node):
+        data = OrderedDict()
+        yield data
+        value = self.construct_mapping(node)
+        data.update(value)
 
-                progress_info += eta_string
+    def construct_mapping(self, node, deep=False):
+        if isinstance(node, yaml.MappingNode):
+            self.flatten_mapping(node)
+        else:
+            raise yaml.constructor.ConstructorError(None, None,
+                'expected a mapping node, but found %s' % node.id, node.start_mark)
 
-                if self.exported_records < self.records_count:
-                    sys.stdout.write(progress_info)
-                    sys.stdout.flush()
-                    sys.stdout.write('\b' * len(progress_info))
-                else:
-                    sys.stdout.flush()
-
-        output.close()
+        mapping = OrderedDict()
+        for key_node, value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                hash(key)
+            except TypeError as exc:
+                raise yaml.constructor.ConstructorError('while constructing a mapping',
+                    node.start_mark, 'found unacceptable key (%s)' % exc, key_node.start_mark)
+            value = self.construct_object(value_node, deep=deep)
+            mapping[key] = value
+        return mapping

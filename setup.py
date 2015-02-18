@@ -24,7 +24,9 @@ setup(
     description=description,
     long_description=open(os.path.join(os.path.dirname(__file__), 'README.md')).read(),
     install_requires=[
-        'psycopg2 >= 2.5.4'
+        'psycopg2 >= 2.5.4',
+        'PyYAML >= 3.11',
+        'parsedatetime >= 1.4'
     ],
     entry_points='''
         [console_scripts]

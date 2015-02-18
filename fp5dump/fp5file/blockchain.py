@@ -102,7 +102,7 @@ class BlockChain(object):
 
         if self.level > 0:
             for index_block in BlockChainIter(self, start_block):
-                for token in index_block.tokens(self.fp5file.file):
+                for token in index_block.index_tokens(self.fp5file.file):
 
                     if token.field_ref == 0 or token.field_ref is None:
                         token_path_with_field_ref = token.path
@@ -110,6 +110,7 @@ class BlockChain(object):
                         token_path_with_field_ref = b'/'.join([token.path, hexlify(token.field_ref.to_bytes((token.field_ref.bit_length() // 8) + 1, byteorder='big'))])
 
                     if search_path <= token_path_with_field_ref or token_path_with_field_ref.startswith(search_path) \
+                            or token_path_with_field_ref.startswith(b'/') \
                             or ((search_path.startswith(token_path_with_field_ref) or token_path_with_field_ref == b'') and (token.field_ref_bin == b'\xFF\xFE' or token.field_ref_bin == b'\xFF\xFF')):
                         if prev_block_id is None:
                             block_id__daughter_order_pos = self.daughter_block_chain.order.index(
@@ -157,8 +158,8 @@ class BlockChain(object):
 
             next_block__prev_id = None
 
-            for token in higher_block_chain__first_block.tokens(file):
-                if token.type == TokenType.FieldRefAndDataSimple:
+            for token in higher_block_chain__first_block.index_tokens(file):
+                if token.type == TokenType.IndexToken:
                     next_block__prev_id = int.from_bytes(token.data, byteorder='big')
 
                     break
