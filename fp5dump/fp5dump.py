@@ -78,7 +78,8 @@ def __dump_records__(args):
         fp5file.dump_records_pgsql(fields_to_dump,
                                    filename=args.output,
                                    drop_empty_columns=args.drop_empty_columns,
-                                   show_progress=args.progress)
+                                   show_progress=args.progress,
+                                   table_name=args.table)
 
 
 def __insert_records__(args):
@@ -108,7 +109,8 @@ def __insert_records__(args):
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
                                                  drop_empty_columns=args.drop_empty_columns,
-                                                 show_progress=args.progress)
+                                                 show_progress=args.progress,
+                                                 table_name=args.table)
         else:
             logging.error("a schema has to be specified if records should be inserted into a db")
 
@@ -217,18 +219,21 @@ def __update_records__(args):
             fp5file.insert_records_into_postgres(fields_to_dump,
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
-                                                 show_progress=args.progress)
+                                                 show_progress=args.progress,
+                                                 table_name=args.table)
         elif action == 'use_existing_table':
             fp5file.update_records_into_postgres(fields_to_dump,
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
-                                                 show_progress=args.progress)
+                                                 show_progress=args.progress,
+                                                 table_name=args.table)
         elif action == 'partial':
             fp5file.update_records_into_postgres(fields_to_dump,
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
                                                  first_record_to_export=first_record_to_export,
-                                                 show_progress=args.progress)
+                                                 show_progress=args.progress,
+                                                 table_name=args.table)
 
 
 def main():
@@ -342,6 +347,9 @@ def main():
                                      help='a yaml file containing information about what fields should be '
                                           'exported and to which types they should be mapped')
 
+    dump_records_parser.add_argument('--table', nargs='?', default=None,
+                                     help='the table name to be used. defaults to the files basename')
+
     dump_records_parser.add_argument('--drop-empty-columns', action='store_true',
                                      help='drop columns that have only NULL values')
 
@@ -397,6 +405,9 @@ def main():
     insert_records_parser.add_argument('--definition', nargs='?', default=None,
                                        help='a yaml file containing information about what fields should be '
                                             'exported and to which types they should be mapped')
+
+    insert_records_parser.add_argument('--table', nargs='?', default=None,
+                                       help='the table name to be used. defaults to the files basename')
 
     insert_records_parser.add_argument('--pg',
                                        help='the postgres connection string')
@@ -462,6 +473,9 @@ def main():
     update_records_parser.add_argument('--definition', nargs='?', default=None,
                                        help='a yaml file containing information about what fields should be '
                                             'exported and to which types they should be mapped')
+
+    update_records_parser.add_argument('--table', nargs='?', default=None,
+                                       help='the table name to be used. defaults to the files basename')
 
     update_records_parser.add_argument('--pg',
                                        help='the postgres connection string')
