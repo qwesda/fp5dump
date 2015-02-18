@@ -175,6 +175,7 @@ class PostgresExporter(Exporter):
                 statement += cursor.mogrify(values_string, record_values)
 
             cursor.execute(statement)
+            conn.commit()
 
     def run(self):
         try:
