@@ -64,7 +64,6 @@ class FP5File(object):
         self.block_id_to_block_pos = None
 
         self.logging.info("opening %s" % self.basename)
-        print(os.path.abspath(os.path.expanduser(self.filename)))
 
         self.file = open(os.path.abspath(os.path.expanduser(self.filename)), "rb", buffering=0)
 
