@@ -2,10 +2,11 @@
 class DataField(object):
     """"""
 
-    def __init__(self, id, name):
+    def __init__(self, id, id_bytes, name):
         super(DataField, self).__init__()
 
         self.id = id
+        self.id_bytes = id_bytes
         self.name = name
         self.label = ""
         self.label_bytes = b""
@@ -56,7 +57,7 @@ class DataField(object):
                 return "text"
 
         elif attribute == "psql_cast":
-            return ("::" + self.psql_type + "[]" if self.repetitions > 1 else "")
+            return "::" + self.psql_type + "[]" if self.repetitions > 1 else ""
 
     def __repr__(self):
         return "0x%04X %9s[%2d] %5s '%s'" % (self.id, self.typename, self.repetitions, self.stored, self.label)

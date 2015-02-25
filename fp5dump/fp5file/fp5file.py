@@ -1,6 +1,7 @@
 from collections import namedtuple, OrderedDict
 import locale
 import os
+import pprint
 import re
 import struct
 import logging
@@ -12,8 +13,7 @@ from array import array
 import parsedatetime as pdt
 from binascii import hexlify, unhexlify
 
-from .block import TokenType, decode_vli
-from .blockchain import BlockChain, BlockChainIter
+from .blockchain import BlockChain, decode_vli
 from .datafield import DataField
 
 from .psqlexporter import PsqlExporter
@@ -72,6 +72,7 @@ class FP5File(object):
         self.read_header()
         self.get_blocks()
         self.order_block_indices()
+
         self.get_field_index()
         self.get_record_index()
 
@@ -80,6 +81,84 @@ class FP5File(object):
 
     def __exit__(self, type, value, tb):
         self.close()
+
+    @staticmethod
+    def __print_node__(key, value, value_limit=10, level=1):
+        key = hexlify(key) if len(key) <= 2 or not all(0x20 <= c <= 0x7E for c in key) else key.decode()
+        key = "" if key == b'' else key
+
+        if type(value) is bytes:
+            if len(value) > 40:
+                print(level * "  ", key, value, "...")
+            else:
+                print(level * "  ", key, value)
+        elif value is None:
+            print(level * "  ", key, value)
+        elif type(value) is OrderedDict:
+            counter = 0
+            print(level * "  ", key)
+
+            for (sub_key, sub_value) in value.items():
+                sub_key_str = hexlify(sub_key) if len(sub_key) <= 2 or not all(0x20 <= c <= 0x7E for c in sub_key) else sub_key.decode()
+
+                if type(sub_value) is bytes:
+                    if len(sub_value) > 40:
+                        print((level+1) * "  ", sub_key_str, sub_value, "...")
+                    else:
+                        print((level+1) * "  ", sub_key_str, sub_value)
+                elif sub_value is None:
+                    print((level+1) * "  ", sub_key_str, sub_value)
+                elif type(sub_value) is OrderedDict:
+                    FP5File.__print_node__(sub_key, sub_value, value_limit, level=level + 1)
+
+                counter += 1
+
+                if counter > value_limit:
+                    print((level + 1) * "  ", "...")
+                    break
+
+    def test_block_lookup(self):
+        test_search_paths = [
+            (b'\x01', True),
+            (b'\x02', True),
+            ([b'\x03', b'\x01'], False),
+            ([b'\x03', b'\x02'], False),
+            ([b'\x03', b'\x03'], False),
+            ([b'\x04', b'\x01'], False),
+            ([b'\x04', b'\x03'], False),
+            ([b'\x04', b'\x05'], False),
+            (b'\x05', True),
+            (b'\x06', True),
+            (b'\x0A', True),
+            (b'\x0B', True),
+            (b'\x0C', True),
+            (b'\x0D', True),
+            (b'\x0E', True),
+            (b'\x11', True),
+            (b'\x17', True),
+            (b'\x17/\x05', False),
+            (b'\x17/\x0E', False),
+            (b'\x17/\x0E', False),
+            (b'\x19', True),
+            (b'\x1F', True),
+            (b'\x20', True),
+            (b'\x21', True),
+            (b'\xFB', True),
+        ]
+
+        for (test_search_path, yield_children) in test_search_paths:
+            print(test_search_path)
+
+            if yield_children:
+                for (ref, data) in self.data.subnodes(test_search_path):
+                    self.__print_node__(ref, data, value_limit=2)
+            else:
+                data = self.data.node(test_search_path)
+                self.__print_node__(b'', data, value_limit=2, level=0)
+
+    def dump_structure(self):
+        for (ref, data) in self.data.subnodes(b''):
+            self.__print_node__(ref, data, value_limit=2)
 
     def close(self):
         self.logging.info("closing %s" % self.basename)
@@ -411,30 +490,35 @@ class FP5File(object):
         try:
             pos = 0x800
 
+            (deleted_flag, self.block_chain_levels, prev_id, self.largest_block_id) \
+                    = struct.unpack_from(">BBII", self.file.read(0x0A))
+
+            self.block_prev_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
+            self.block_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
+
+            for i in range(0, self.block_chain_levels + 1):
+                self.block_chains.append(BlockChain(self, i))
+
+            self.index = self.block_chains[self.block_chain_levels]
+            self.index.first_block_pos = pos
+            self.index.length = 1
+
+            self.data = self.block_chains[0]
+
+            pos = 0xC00
+
             while pos < self.file_size:
                 self.file.seek(pos)
 
-                (deleted_flag, level, prev_id, next_id) = struct.unpack_from(">BBII", self.file.read(10))
-
-                if pos == 0x800:
-                    self.largest_block_id = next_id
-                    self.block_prev_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
-                    self.block_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
-
-                    self.block_chain_levels = level
-
-                    for i in range(0, self.block_chain_levels + 1):
-                        self.block_chains.append(BlockChain(self, i))
-
-                    self.index = self.block_chains[level]
-                    self.index.first_block_pos = pos
-
-                    self.data = self.block_chains[0]
+                (deleted_flag, level, prev_id) = struct.unpack_from(">BBI", self.file.read(0x06))
 
                 if deleted_flag != 0xff:
                     if prev_id == 0x00000000:
                         self.block_chains[level].first_block_pos = pos
+                        self.block_chains[level].length += 1
                     else:
+                        self.block_chains[level].length += 1
+
                         if self.block_prev_id_to_block_pos[prev_id] == 0x00000000:
                             self.block_prev_id_to_block_pos[prev_id] = pos
                         else:
@@ -449,8 +533,6 @@ class FP5File(object):
 
     def order_block_indices(self):
         for level in reversed(range(0, self.block_chain_levels + 1)):
-            self.logging.debug("ordering index %d" % level)
-
             block_chain = self.block_chains[level]
 
             if level > 0:
@@ -460,6 +542,8 @@ class FP5File(object):
                 block_chain.parent_block_chain = self.block_chains[level + 1]
 
             block_chain.order_blocks()
+
+            self.logging.debug("ordered index %d" % level)
 
     def dump_index_blocks(self, output_filename=None):
         self.logging.info("dump index blocks")
@@ -472,8 +556,9 @@ class FP5File(object):
                 if level > 0:
                     block_chain = self.block_chains[level]
 
-                    for block in block_chain:
-                        file.write(block.get_block_bytes_from_file(self.file, True))
+                    for block_id in block_chain.order:
+                        self.file.seek(self.block_id_to_block_pos[block_id])
+                        file.write(self.file.read(0x400))
 
     def dump_data_blocks(self, output_filename=None):
         self.logging.info("dump data blocks")
@@ -482,8 +567,9 @@ class FP5File(object):
             output_filename = self.filename + ".data"
 
         with open(output_filename, "wb") as file:
-            for block in self.data:
-                file.write(block.get_block_bytes_from_file(self.file, True))
+            for block_id in self.data.order:
+                self.file.seek(self.block_id_to_block_pos[block_id])
+                file.write(self.file.read(0x400))
 
     def dump_blocks_with_path(self, search_path, output_filename=None):
         self.logging.info("dump data with path %r" % search_path)
@@ -502,145 +588,214 @@ class FP5File(object):
                 else:
                     file.write(block.get_block_bytes_from_file(self.file, True))
 
-    def get_data_with_path(self, search_path):
-        if type(search_path) is list:
-            search_path = b'/'.join(hexlify(part) for part in search_path)
-        elif type(search_path) is bytes:
-            search_path = search_path.lower()
+    def find_first_block_id_for_path(self, search_path):
+        if type(search_path) is bytes:
+            search_path = search_path.split(b'/')
 
-        tokens = []
+        last_payload = None
 
-        for token in self.data.tokens(search_path):
-            if token.type != TokenType.xC0:
-                tokens.append(token)
+        for block_chain_level in reversed(range(1, self.block_chain_levels + 1)):
+            block_chain = self.block_chains[block_chain_level]
 
-        return tokens
+            order = block_chain.order
+            path = []
 
-    def get_sub_data_with_path(self, search_path, first_sub_record_to_export=None):
-        if type(search_path) is list:
-            search_path = b'/'.join(hexlify(part) for part in search_path)
-        elif type(search_path) is bytes:
-            search_path = search_path.lower()
+            is_first_block = True
+            block_chain_end_reached = False
 
-        tokens = []
+            current_block_id = block_chain.order[0] if last_payload is None else int.from_bytes(last_payload, byteorder='big')
+            current_block_order_pos = block_chain.order.index(current_block_id)
+            current_block_file_pos = self.block_id_to_block_pos[current_block_id]
 
-        search_path_split_len = len(search_path.split(b'/'))
-        last_sub_data_key = None
-        last_sub_data_start = None
+            last_payload = None
 
-        if first_sub_record_to_export is not None:
-            first_sub_record_to_export = hexlify(first_sub_record_to_export)
-            start_block = self.index.find_first_block_id_for_path(b'/'.join([search_path, first_sub_record_to_export]))
-        else:
-            start_block = None
+            while not block_chain_end_reached:
+                self.logging.debug("index block 0x%02X 0x%08X @ 0x%08X" % (block_chain_level, current_block_id, current_block_file_pos))
 
-        for token in self.data.tokens(search_path, start_block=start_block):
-            token_path_split = token.path.split(b'/')
+                self.file.seek(current_block_file_pos + 0x0A)
+                (current_block_skip_bytes, current_block_length) = struct.unpack_from(">HH", self.file.read(0x04))
 
-            if len(token_path_split) > search_path_split_len:
-                sub_data_key = token_path_split[search_path_split_len]
-            else:
-                sub_data_key = None
+                data_len = current_block_length
+                data = self.file.read(data_len)
 
-            if first_sub_record_to_export is not None and first_sub_record_to_export > sub_data_key:
-                continue
-
-            if token.type == TokenType.xC0 and len(token_path_split) == search_path_split_len + 1:
-                if last_sub_data_key is not None and last_sub_data_start < len(tokens):
-                    yield tokens[last_sub_data_start:] + [token]
-
-                    del tokens[last_sub_data_start:]
+                if not is_first_block:
+                    cursor = current_block_skip_bytes - 1
                 else:
-                    yield [token]
+                    cursor = 0
 
-            if sub_data_key != last_sub_data_key:
-                if sub_data_key is not None:
-                    last_sub_data_start = len(tokens)
+                while cursor < data_len:
+                    char_at_cursor = data[cursor]
 
-                last_sub_data_key = sub_data_key
+                    if 0x01 <= char_at_cursor <= 0x3F:
+                        payload_start = cursor + 2 + char_at_cursor
+                        payload_end = payload_start + data[payload_start - 1]
+                        ref = data[cursor + 1:cursor + 1 + char_at_cursor]
 
-            if token.type != TokenType.xC0:
-                tokens.append(token)
+                        if ref == b'\xff\xff' and search_path[:len(path)] == path:
+                            break
 
-        if last_sub_data_key is not None and last_sub_data_start < len(tokens):
-            yield tokens[last_sub_data_start:]
+                        last_payload = data[payload_start:payload_end]
 
-            del tokens[last_sub_data_start:]
+                        cursor += payload_end - cursor
+
+                        continue
+
+                    # 0x00
+                    elif char_at_cursor == 0x00:
+                        payload_start = cursor + 2
+                        payload_end = payload_start + data[cursor + 1]
+
+                        last_payload = data[payload_start:payload_end]
+
+                        cursor += payload_end - cursor
+                        continue
+
+                    # FieldRefSimple + DataSimple
+                    elif 0x40 <= char_at_cursor <= 0x7F:
+                        payload_start = cursor + 2
+                        payload_end = payload_start + data[cursor + 1]
+
+                        last_payload = data[payload_start:payload_end]
+
+                        cursor += payload_end - cursor
+                        continue
+
+                    # parse 0xC0
+                    elif char_at_cursor == 0xC0:
+                        if len(path) == 0:
+                            break
+
+                        path.pop()
+
+                        cursor += 1
+
+                        continue
+
+                    # parse 0xCN
+                    elif 0xC1 <= char_at_cursor <= 0xFC:
+                        payload_start = cursor + 1
+                        payload_end = payload_start + (char_at_cursor - 0xC0)
+
+                        path.append(data[payload_start:payload_end])
+
+                        if path >= search_path:
+                            break
+
+                        cursor += payload_end - cursor
+
+                        continue
+                else:
+                    if cursor != data_len:
+                        print("Parsing incomplete: expected: %d got: %d" % (cursor, data_len))
+
+                        raise Exception("Parsing incomplete")
+
+                    is_first_block = False
+
+                    if current_block_order_pos < block_chain.length:
+                        current_block_order_pos += 1
+                        current_block_id = order[current_block_order_pos]
+                        current_block_file_pos = self.block_id_to_block_pos[current_block_id]
+                    else:
+                        block_chain_end_reached = True
+
+                    continue
+
+                if last_payload is None:
+                    if current_block_order_pos > 0:
+                        path = []
+
+                        is_first_block = True
+                        block_chain_end_reached = False
+
+                        current_block_order_pos -= 1
+                        current_block_id = block_chain.order[current_block_order_pos]
+                        current_block_file_pos = self.block_id_to_block_pos[current_block_id]
+
+                        last_payload = None
+                        continue
+                    else:
+                        raise Exception("Error while location start block for path")
+
+                break
+
+        if last_payload is not None:
+            return int.from_bytes(last_payload, byteorder='big')
+
+        self.logging.error("could not find block for path %r" % search_path)
+        return None
 
     def get_field_index(self):
         self.logging.debug("get_field_index")
 
         self.fields = {}
 
-        for id_token in self.get_data_with_path(b'03/01'):
-            field_id = decode_vli(id_token.data[1:])
+        for (field_name, field_id_bin) in self.data.subnodes(b'\x03/\x01'):
+            field_id = decode_vli(field_id_bin[1:])
 
             if field_id in self.fields:
-                print("duplicate id for field", id_token)
+                print("duplicate id for field", field_id, field_name)
 
-            self.fields[field_id] = DataField(field_id, id_token.field_ref_bin)
+            self.fields[field_id] = DataField(field_id, field_id_bin[1:], field_name)
 
-        for type_token in self.get_data_with_path(b'03/02'):
-            field_type = type_token.path[-1] - 0x30
+        for (field_type, fields) in self.data.subnodes(b'\x03/\x02'):
+            field_type = field_type[0]
 
-            for field_id in type_token.data:
-                field_id = decode_vli(field_id)
+            for field_id_bin in fields.keys():
+                field_id = decode_vli(field_id_bin)
 
                 if field_id in self.fields:
                     self.fields[field_id].type = field_type
                 else:
                     print("unhandled field id in field type index", field_id)
 
-        for field_type_nr in self.get_data_with_path(b'03/03'):
-            field_id = decode_vli(field_type_nr.data[1:])
+        for (field_nr_bin, field_id_bin) in self.data.subnodes(b'\x03/\x03'):
+            field_id = decode_vli(field_id_bin[1:])
 
             if field_id in self.fields:
-                field_nr = int.from_bytes(field_type_nr.field_ref_bin, byteorder='big')
+                field_nr = int.from_bytes(field_nr_bin, byteorder='big')
 
                 self.fields[field_id].order = field_nr
             else:
                 print("unhandled field id in field type index", field_id)
 
-        for field_option_tokens in self.get_sub_data_with_path(b'03/05'):
-            field_id = decode_vli(unhexlify(field_option_tokens[0].path.split(b'/')[2]))
+        for (field_nr_bin, options) in self.data.subnodes(b'\x03/\x05'):
+            field_id = decode_vli(field_nr_bin)
 
             if field_id in self.fields:
                 field = self.fields[field_id]
 
-                for option_token in field_option_tokens:
-                    token_sub_path_split = option_token.path.split(b'/')[3:]
+                if b'\x01' in options:
+                    name_bin = options[b'\x01']
 
-                    if len(token_sub_path_split) == 0:
-                        if option_token.field_ref == 1:
-                            field.label = option_token.data.decode(self.encoding)
-                            field.label_bytes = option_token.data
+                    field.label = name_bin.decode(self.encoding)
+                    field.label_bytes = name_bin
 
-                        if option_token.field_ref == 2:
-                            field.stored = option_token.data[0] <= 0x02
-                            field.indexed = option_token.data[2] == 0x01
+                if b'\x02' in options:
+                    flags_bin = options[b'\x02']
 
-                            field.repetitions = option_token.data[11]
+                    field.stored = flags_bin[0] <= 0x02
+                    field.indexed = flags_bin[2] == 0x01
+
+                    field.repetitions = flags_bin[11]
             else:
                 print("unhandled field id in field type index", field_id)
 
     def get_record_index(self):
         self.logging.debug("get_record_index")
 
-        tokens = self.get_data_with_path(b'0D')
+        self.records_index = list(decode_vli(x) for x in self.data.node(b'\x0D').keys())
+        self.records_count = len(self.records_index)
 
-        if len(tokens) == 1 and tokens[0].type == TokenType.x8N:
-            self.records_index = tokens[0].data
-            self.records_count = len(self.records_index)
-
-    def insert_records_into_postgres(self, fields_to_dump, first_record_to_export=None, table_name=None,
+    def insert_records_into_postgres(self, fields_to_dump, first_record_to_process=None, table_name=None,
                                      psycopg2_connect_string=None, schema=None, show_progress=False,
                                      drop_empty_columns=False):
         self.logging.info("inserting records")
 
         exporter = PostgresExporter(self, fields_to_dump,
                                     schema, psycopg2_connect_string,
-                                    first_record_to_export=first_record_to_export,
-                                    use_existing_table=False,
+                                    first_record_to_process=first_record_to_process,
+                                    update_table=False,
                                     table_name=table_name,
                                     drop_empty_columns=drop_empty_columns,
                                     show_progress=show_progress)
@@ -649,15 +804,15 @@ class FP5File(object):
         if exporter.sampled_errors_for_fields:
             print(exporter.format_errors())
 
-    def update_records_into_postgres(self, fields_to_dump, first_record_to_export=None, table_name=None,
+    def update_records_into_postgres(self, fields_to_dump, first_record_to_process=None, table_name=None,
                                      psycopg2_connect_string=None, schema=None, show_progress=False,
                                      drop_empty_columns=False):
         self.logging.info("updating records")
 
         exporter = PostgresExporter(self, fields_to_dump,
                                     schema, psycopg2_connect_string,
-                                    first_record_to_export=first_record_to_export,
-                                    use_existing_table=True,
+                                    first_record_to_process=first_record_to_process,
+                                    update_table=True,
                                     table_name=table_name,
                                     drop_empty_columns=drop_empty_columns,
                                     show_progress=show_progress)
@@ -666,7 +821,7 @@ class FP5File(object):
         if exporter.sampled_errors_for_fields:
             print(exporter.format_errors())
 
-    def dump_records_pgsql(self, fields_to_dump, first_record_to_export=None, filename=None, table_name=None,
+    def dump_records_pgsql(self, fields_to_dump, first_record_to_process=None, filename=None, table_name=None,
                            show_progress=False, drop_empty_columns=False):
         self.logging.info("dumping records")
 
@@ -674,7 +829,7 @@ class FP5File(object):
             filename = os.path.join(self.dirname, self.basename + '.psql')
 
         exporter = PsqlExporter(self, fields_to_dump, filename,
-                                first_record_to_export=first_record_to_export,
+                                first_record_to_process=first_record_to_process,
                                 table_name=table_name,
                                 drop_empty_columns=drop_empty_columns,
                                 show_progress=show_progress)

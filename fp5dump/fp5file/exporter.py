@@ -7,13 +7,13 @@ import parsedatetime as pdt
 
 class Exporter(object):
     def __init__(self, fp5file, export_definition,
-                 first_record_to_export=None, table_name=None, show_progress=False, drop_empty_columns=False):
+                 first_record_to_process=None, table_name=None, show_progress=False, drop_empty_columns=False):
 
         super(Exporter, self).__init__()
 
         self.fp5file = fp5file
         self.export_definition = export_definition
-        self.first_record_to_export = first_record_to_export
+        self.first_record_to_process = first_record_to_process
         self.table_name = table_name
         self.show_progress = show_progress
         self.drop_empty_columns = drop_empty_columns
@@ -25,11 +25,16 @@ class Exporter(object):
 
         self.ptd_parser = None
 
-        self.exported_records = 0
+        self.processed_records = 0
+        self.inserted_records = 0
+        self.updated_records = 0
+        self.deleted_records = 0
+
         self.failed_records = 0
-        self.records_to_export_count = 0
+        self.records_to_process_count = 0
 
         self.sampled_errors_for_fields = {}
+
 
     def set_locale(self):
         if not self.fp5file.locale:
@@ -87,24 +92,30 @@ class Exporter(object):
 
         return "\n".join(error_texts)
 
-    def show_progress_info(self):
-        padding = len(str(self.records_to_export_count))
+    def update_progress(self):
+        self.processed_records += 1
 
-        eta_last_updated = time.time()
+        now = time.time()
 
-        seconds_elapsed = eta_last_updated - self.start_time
-        seconds_remaining = (self.records_to_export_count - self.exported_records) * (
-            seconds_elapsed / self.exported_records)
-        eta_string = " ETA: %d:%02d " % (seconds_remaining // 60, seconds_remaining % 60)
+        if now - self.eta_last_updated >= 1:
+            self.eta_last_updated = now
 
-        format_string = "%%%dd/%%d" % padding
-        progress_info = format_string % (self.exported_records, self.records_to_export_count)
+            padding = len(str(self.records_to_process_count))
 
-        progress_info += eta_string
+            seconds_elapsed = self.eta_last_updated - self.start_time
+            seconds_remaining = (self.records_to_process_count - self.processed_records) * (seconds_elapsed / self.processed_records)
 
-        if self.exported_records < self.records_to_export_count:
-            sys.stdout.write(progress_info)
-            sys.stdout.flush()
-            sys.stdout.write('\b' * len(progress_info))
-        else:
-            sys.stdout.flush()
+            eta_string = " ETA: %d:%02d" % (seconds_remaining // 60, seconds_remaining % 60)
+            elapsed_string = " %d:%02d " % (seconds_elapsed // 60, seconds_elapsed % 60)
+
+            format_string = "%%%dd/%%d" % padding
+            progress_info = format_string % (self.processed_records, self.records_to_process_count)
+
+            progress_info += elapsed_string + eta_string
+
+            if self.processed_records < self.records_to_process_count:
+                sys.stdout.write(progress_info)
+                sys.stdout.flush()
+                sys.stdout.write('\b' * len(progress_info))
+            else:
+                sys.stdout.flush()

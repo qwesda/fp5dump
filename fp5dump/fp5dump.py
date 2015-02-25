@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-from collections import OrderedDict
 
 import re
 import os
@@ -9,10 +8,10 @@ import psycopg2
 
 try:
     from fp5file.fp5file import FP5File, FieldExportDefinition
-    from fp5file.block import encode_vli, decode_vli
+    from fp5file.blockchain import encode_vli, decode_vli
 except ImportError:
     from .fp5file.fp5file import FP5File, FieldExportDefinition
-    from .fp5file.block import encode_vli, decode_vli
+    from .fp5file.blockchain import encode_vli, decode_vli
 
 
 def __list_fields__(args):
@@ -115,7 +114,7 @@ def __insert_records__(args):
             logging.error("a schema has to be specified if records should be inserted into a db")
 
 
-def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connect_string, schema, truncate_last_rows):
+def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connect_string, schema, limit_updated_rows):
     if fields_to_dump is None:
         logging.error("no fields to dump")
         return
@@ -162,32 +161,25 @@ def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connec
                     if set(column_infos) != set(normalized_dest_column_infos):
                         logging.info("the table to be updated has a different set of columns then the requested export definition")
 
-                        return ('full', None)
+                        return 'full', None
 
-                    if truncate_last_rows > 0:
-                        cursor.execute("""DELETE FROM "%s"."%s" WHERE fm_id > (SELECT fm_id FROM "%s"."%s" ORDER BY fm_id DESC LIMIT 1 OFFSET %d)""" %
-                                (schema, fp5file.db_name, schema, fp5file.db_name, truncate_last_rows))
+                    if limit_updated_rows == 0:
+                        return 'update', None
 
-                    cursor.execute("""SELECT fm_id FROM "%s"."%s" ORDER BY fm_id DESC""" %
-                            (schema, fp5file.db_name))
+                    cursor.execute("""SELECT fm_id FROM "%s"."%s" ORDER BY fm_id DESC LIMIT 1 OFFSET %d""" % (schema, fp5file.db_name, limit_updated_rows))
 
                     while True:
                         id = cursor.fetchone()
 
                         if id is None:
-                            return ('use_existing_table', None)
+                            return 'update', None
 
                         try:
-                            id_encoded = encode_vli(id[0])
-                            index = fp5file.records_index.index(id_encoded)
+                            index = fp5file.records_index.index(id[0])
 
-                            if index + 1 < fp5file.records_count:
-                                first_record_to_export = fp5file.records_index[index+1]
+                            first_record_to_process = fp5file.records_index[index+1]
 
-                                return ('partial', first_record_to_export)
-                            else:
-                                logging.info("nothing to do – latest fm_id in db and fp5 file are the same")
-                                return (None, None)
+                            return 'partial-update', first_record_to_process
                         except ValueError:
                             continue
 
@@ -213,7 +205,7 @@ def __update_records__(args):
             logging.error("no records to dump")
             return
 
-        action, first_record_to_export = __update_records_determine_action__(fp5file, fields_to_dump, args.pg, args.schema, args.truncate_last_rows)
+        action, first_record_to_process = __update_records_determine_action__(fp5file, fields_to_dump, args.pg, args.schema, args.limit_updated_rows)
 
         if action == 'full':
             fp5file.insert_records_into_postgres(fields_to_dump,
@@ -221,17 +213,17 @@ def __update_records__(args):
                                                  schema=args.schema,
                                                  show_progress=args.progress,
                                                  table_name=args.table)
-        elif action == 'use_existing_table':
+        elif action == 'update':
             fp5file.update_records_into_postgres(fields_to_dump,
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
                                                  show_progress=args.progress,
                                                  table_name=args.table)
-        elif action == 'partial':
+        elif action == 'partial-update':
             fp5file.update_records_into_postgres(fields_to_dump,
                                                  psycopg2_connect_string=args.pg,
                                                  schema=args.schema,
-                                                 first_record_to_export=first_record_to_export,
+                                                 first_record_to_process=first_record_to_process,
                                                  show_progress=args.progress,
                                                  table_name=args.table)
 
@@ -428,9 +420,8 @@ def main():
     update_records_parser.add_argument('input', type=argparse.FileType('r'),
                                        help='the fp5 file to dump the records of')
 
-    update_records_parser.add_argument('--truncate-last-rows', default=0, type=int,
-                                       help='removes the last n records from the db before inserting new ones\n'
-                                            'useful for making sure these last records are updated')
+    update_records_parser.add_argument('--limit-updated-rows', default=0, type=int,
+                                       help='checks only the last n rows for potential update')
 
     update_records_parser.add_argument('--encoding', nargs='?', default=None,
                                        help='the encoding to interpret strings defaults to "latin_1"')

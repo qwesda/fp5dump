@@ -5,14 +5,14 @@ import time
 from binascii import unhexlify
 import uuid
 
-from .block import TokenType, decode_vli
+from .blockchain import decode_vli
 from .exporter import Exporter
 
 
 class PsqlExporter(Exporter):
     def __init__(self, fp5file, export_definition, filename,
-                 first_record_to_export=None, table_name=None, show_progress=False, drop_empty_columns=False):
-        super(PsqlExporter, self).__init__(fp5file, export_definition, first_record_to_export, table_name, show_progress, drop_empty_columns)
+                 first_record_to_process=None, table_name=None, show_progress=False, drop_empty_columns=False):
+        super(PsqlExporter, self).__init__(fp5file, export_definition, first_record_to_process, table_name, show_progress, drop_empty_columns)
 
         self.filename = filename
 
@@ -69,10 +69,10 @@ class PsqlExporter(Exporter):
 
         self.start_time = self.eta_last_updated = time.time()
 
-        self.records_to_export_count = self.fp5file.records_count
+        self.records_to_process_count = self.fp5file.records_count
 
-        if self.first_record_to_export is not None:
-            self.records_to_export_count -= self.fp5file.records_index.index(self.first_record_to_export)
+        if self.first_record_to_process is not None:
+            self.records_to_process_count -= self.fp5file.records_index.index(self.first_record_to_process)
 
     def flush_batch(self, output, batch_values, batch_fields_present):
         output.write('INSERT INTO "%s" ("fm_id", "fm_mod_id", ' % self.table_name)
@@ -113,59 +113,59 @@ class PsqlExporter(Exporter):
             batch_fields_present = []
             table_fields_present = set()
 
-            for record_tokens in self.fp5file.get_sub_data_with_path(b'05', first_sub_record_to_export=self.first_record_to_export):
+            for record_tokens in self.fp5file.get_sub_data_with_path(b'05', first_sub_record_to_export=self.first_record_to_process):
                 record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
                 record_id = decode_vli(record_id)
 
                 record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
 
                 values = [record_id, 0] + ([None] * len(batch_fields_present))
-
-                for record_token in record_tokens:
-                    export_def = None
-                    field_ref = None
-
-                    if record_token.type == TokenType.xC0:
-                        continue
-                    elif record_token.type == TokenType.xFC:
-                        values[1] = int.from_bytes(record_token.data, byteorder='big')
-
-                        continue
-                    elif record_path == record_token.path:
-                        field_ref = record_token.field_ref
-                    elif len(record_token.path.split(b'/')) == 3:
-                        field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
-                    else:
-                        continue
-
-                    if field_ref:
-                        for _export_def in self.export_definition.values():
-                            if field_ref == _export_def.field.id:
-                                export_def = _export_def
-
-                                if field_ref not in batch_fields_present:
-                                    batch_fields_present.append(field_ref)
-                                    values.append(None)
-
-                                break
-
-                    if export_def:
-                        value = record_token.data.decode(self.fp5file.encoding)
-
-                        value_pos = batch_fields_present.index(export_def.field_id) + 2
-
-                        if export_def.split:
-                            values[value_pos] = value.splitlines()
-                        elif export_def.subscript is not None:
-                            if record_token.field_sub_ref == export_def.subscript:
-                                values[value_pos] = value
-                        elif not export_def.is_array:
-                            values[value_pos] = value
-                        else:
-                            if values[value_pos] is None:
-                                values[value_pos] = [None] * export_def.field.repetitions
-
-                            values[value_pos][record_token.field_sub_ref - 1] = value
+                #
+                # for record_token in record_tokens:
+                #     export_def = None
+                #     field_ref = None
+                #
+                #     if record_token.type == TokenType.xC0:
+                #         continue
+                #     elif record_token.type == TokenType.xFC:
+                #         values[1] = int.from_bytes(record_token.data, byteorder='big')
+                #
+                #         continue
+                #     elif record_path == record_token.path:
+                #         field_ref = record_token.field_ref
+                #     elif len(record_token.path.split(b'/')) == 3:
+                #         field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
+                #     else:
+                #         continue
+                #
+                #     if field_ref:
+                #         for _export_def in self.export_definition.values():
+                #             if field_ref == _export_def.field.id:
+                #                 export_def = _export_def
+                #
+                #                 if field_ref not in batch_fields_present:
+                #                     batch_fields_present.append(field_ref)
+                #                     values.append(None)
+                #
+                #                 break
+                #
+                #     if export_def:
+                #         value = record_token.data.decode(self.fp5file.encoding)
+                #
+                #         value_pos = batch_fields_present.index(export_def.field_id) + 2
+                #
+                #         if export_def.split:
+                #             values[value_pos] = value.splitlines()
+                #         elif export_def.subscript is not None:
+                #             if record_token.field_sub_ref == export_def.subscript:
+                #                 values[value_pos] = value
+                #         elif not export_def.is_array:
+                #             values[value_pos] = value
+                #         else:
+                #             if values[value_pos] is None:
+                #                 values[value_pos] = [None] * export_def.field.repetitions
+                #
+                #             values[value_pos][record_token.field_sub_ref - 1] = value
 
                 for field_ref in batch_fields_present:
                     value_pos = batch_fields_present.index(field_ref) + 2
@@ -182,7 +182,7 @@ class PsqlExporter(Exporter):
 
                 self.exported_records += 1
 
-                if self.exported_records % 100 == 0 or self.exported_records == self.records_to_export_count:
+                if self.exported_records % 100 == 0 or self.exported_records == self.records_to_process_count:
                     self.flush_batch(output, batch_values, batch_fields_present)
 
                     table_fields_present.update(batch_fields_present)
@@ -190,7 +190,7 @@ class PsqlExporter(Exporter):
                     batch_values.clear()
 
                 if self.show_progress and (self.exported_records % 100 == 0):
-                    self.show_progress_info()
+                    self.update_progress()
 
             if self.drop_empty_columns:
                 for export_def in self.export_definition.values():
