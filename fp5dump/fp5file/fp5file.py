@@ -1,10 +1,10 @@
 from collections import namedtuple, OrderedDict
 import locale
 import os
-import pprint
 import re
 import struct
 import logging
+import sys
 import yaml
 import codecs
 import yaml.constructor
@@ -13,6 +13,7 @@ from array import array
 import parsedatetime as pdt
 from binascii import hexlify, unhexlify
 
+from .block import Block
 from .blockchain import BlockChain, decode_vli
 from .datafield import DataField
 
@@ -63,7 +64,7 @@ class FP5File(object):
         self.block_prev_id_to_block_pos = None
         self.block_id_to_block_pos = None
 
-        self.logging.info("opening %s" % self.basename)
+        self.logging.info('opening "%s"' % self.basename)
 
         self.file = open(os.path.abspath(os.path.expanduser(self.filename)), "rb", buffering=0)
 
@@ -324,11 +325,11 @@ class FP5File(object):
                 exclude = True
 
             if include and not exclude:
-                export_definition[field_id] = FieldExportDefinition(field_id, field,
-                                                                    field.psql_type if not treat_all_as_string else "text",
-                                                                    field.psql_type if not treat_all_as_string else "text",
-                                                                    field.psql_cast if not treat_all_as_string else ("::text" "[]" if self.repetitions == 0 else ":text[]"),
-                                                                    field.repetitions > 1, False, None, False, None, field_pos)
+                export_definition[field.field_id_bin] = FieldExportDefinition(field_id, field,
+                        field.psql_type if not treat_all_as_string else "text",
+                        field.psql_type if not treat_all_as_string else "text", 0x19,
+                        field.psql_cast if not treat_all_as_string else ("::text" "[]" if self.repetitions == 0 else ":text[]"),
+                        field.repetitions > 1, False, None, False, None, field_pos)
 
                 field_pos += 1
 
@@ -393,6 +394,7 @@ class FP5File(object):
                             "type": column_type,
                             "psql_type": None,
                             "psql_cast": "",
+                            "pg_oid": None,
                             "is_array": False,
                             "split": False,
                             "subscript": None,
@@ -449,11 +451,11 @@ class FP5File(object):
                             field_def['enum'] = {}
 
                             for enum_key, enum_values in yaml_definition['enums'][field_def['psql_type']].items():
-                                field_def['enum'][enum_key] = \
-                                    [(v.upper() if v is not None else None) for v in (enum_values if type(enum_values) is list else [enum_values])]
+                                field_def['enum'][enum_key.encode()] = \
+                                    [(v.encode(self.encoding).upper() if v is not None else None) for v in (enum_values if type(enum_values) is list else [enum_values])]
 
-                            if '*' in field_def['enum']:
-                                field_def['enum']['*'] = field_def['enum']['*'][0]
+                            if b'*' in field_def['enum']:
+                                field_def['enum'][b'*'] = field_def['enum'][b'*'][0]
 
                         elif field_def['psql_type'] not in ['integer', 'numeric', 'text', 'boolean', 'date', 'uuid']:
                             self.logging.error("unexpected type '%s' found in export definition for field '%s'" % (
@@ -468,11 +470,28 @@ class FP5File(object):
                         elif field_def['is_array']:
                             field_def['psql_cast'] = "::%s[]" % (field_def['psql_type'])
 
-                        export_definition[field_def['field_id']] = FieldExportDefinition(
-                                field_def['field_id'], field,
-                                field_def['type'], field_def['psql_type'], field_def['psql_cast'],
-                                field_def['is_array'], field_def['split'], field_def['subscript'],
-                                field_def['is_enum'], field_def['enum'], field_def['pos'])
+
+
+                        if field_def['psql_type'] == "text":
+                            field_def['pg_oid'] = 0x19
+                        elif field_def['psql_type'] == "integer":
+                            field_def['pg_oid'] = 0x17
+                        elif field_def['psql_type'] == "biginteger":
+                            field_def['pg_oid'] = 0x14
+                        elif field_def['psql_type'] == "numeric":
+                            field_def['pg_oid'] = 0x06A4
+                        elif field_def['psql_type'] == "date":
+                            field_def['pg_oid'] = 0x043A
+                        elif field_def['psql_type'] == "uuid":
+                            field_def['pg_oid'] = 0x0B86
+                        elif field_def['psql_type'] == "boolean":
+                            field_def['pg_oid'] = 0x0010
+
+                        export_definition[field.field_id_bin] = FieldExportDefinition(
+                            field_def['field_id'], field,
+                            field_def['type'], field_def['psql_type'], field_def['psql_cast'], field_def['pg_oid'],
+                            field_def['is_array'], field_def['split'], field_def['subscript'],
+                            field_def['is_enum'], field_def['enum'], field_def['pos'])
 
                         field_pos += 1
 
@@ -560,6 +579,8 @@ class FP5File(object):
                         self.file.seek(self.block_id_to_block_pos[block_id])
                         file.write(self.file.read(0x400))
 
+        return True
+
     def dump_data_blocks(self, output_filename=None):
         self.logging.info("dump data blocks")
 
@@ -571,22 +592,38 @@ class FP5File(object):
                 self.file.seek(self.block_id_to_block_pos[block_id])
                 file.write(self.file.read(0x400))
 
+        return True
+
     def dump_blocks_with_path(self, search_path, output_filename=None):
         self.logging.info("dump data with path %r" % search_path)
 
+        if type(search_path) is bytes:
+            search_path = search_path.split(b'/')
+
+        search_path_bin = b'/'.join([hexlify(x) for x in search_path])
+
         if not output_filename:
-            output_filename = self.filename + "." + search_path.decode().replace("/", "_") + ".data"
+            output_filename = self.filename + "." + search_path_bin.decode() + ".data"
 
-        with open(output_filename, "wb") as file:
-            start_block = self.index.find_first_block_id_for_path(search_path)
+        start_block_id = self.find_first_block_id_for_path(search_path)
+        start_block_pos = self.data.order.index(start_block_id)
 
-            for block in BlockChainIter(self.data, start_block):
-                first_token_path_block = block.get_first_token_path(self.file)
+        search_path_bin_len = len(search_path_bin)
 
-                if first_token_path_block > search_path and not first_token_path_block.startswith(search_path):
-                    break
-                else:
-                    file.write(block.get_block_bytes_from_file(self.file, True))
+        if start_block_pos:
+            with open(output_filename, "wb") as file:
+                for block_id in self.data.order[start_block_pos:]:
+                    block = Block(self.file, self.block_id_to_block_pos[block_id], block_id)
+
+                    block_first_token_path = block.get_first_token_path(self.file)
+
+                    if block_first_token_path[:search_path_bin_len] != search_path_bin:
+                        break
+
+                    self.file.seek(self.block_id_to_block_pos[block_id])
+                    file.write(self.file.read(0x400))
+
+        return True
 
     def find_first_block_id_for_path(self, search_path):
         if type(search_path) is bytes:
@@ -732,38 +769,35 @@ class FP5File(object):
 
         for (field_name, field_id_bin) in self.data.subnodes(b'\x03/\x01'):
             field_id = decode_vli(field_id_bin[1:])
+            field_id_bin = field_id_bin[1:]
 
-            if field_id in self.fields:
+            if field_id_bin in self.fields:
                 print("duplicate id for field", field_id, field_name)
 
-            self.fields[field_id] = DataField(field_id, field_id_bin[1:], field_name)
+            self.fields[field_id_bin] = DataField(field_id, field_id_bin, field_name)
 
         for (field_type, fields) in self.data.subnodes(b'\x03/\x02'):
+            field_id = decode_vli(field_id_bin[1:])
             field_type = field_type[0]
 
             for field_id_bin in fields.keys():
-                field_id = decode_vli(field_id_bin)
-
-                if field_id in self.fields:
-                    self.fields[field_id].type = field_type
+                if field_id_bin in self.fields:
+                    self.fields[field_id_bin].type = field_type
                 else:
                     print("unhandled field id in field type index", field_id)
 
-        for (field_nr_bin, field_id_bin) in self.data.subnodes(b'\x03/\x03'):
+        for (field_nr, field_id_bin) in self.data.subnodes(b'\x03/\x03'):
             field_id = decode_vli(field_id_bin[1:])
+            field_id_bin = field_id_bin[1:]
 
-            if field_id in self.fields:
-                field_nr = int.from_bytes(field_nr_bin, byteorder='big')
-
-                self.fields[field_id].order = field_nr
+            if field_id_bin in self.fields:
+                self.fields[field_id_bin].order = field_nr
             else:
                 print("unhandled field id in field type index", field_id)
 
-        for (field_nr_bin, options) in self.data.subnodes(b'\x03/\x05'):
-            field_id = decode_vli(field_nr_bin)
-
-            if field_id in self.fields:
-                field = self.fields[field_id]
+        for (field_id_bin, options) in self.data.subnodes(b'\x03/\x05'):
+            if field_id_bin in self.fields:
+                field = self.fields[field_id_bin]
 
                 if b'\x01' in options:
                     name_bin = options[b'\x01']
@@ -790,7 +824,7 @@ class FP5File(object):
     def insert_records_into_postgres(self, fields_to_dump, first_record_to_process=None, table_name=None,
                                      psycopg2_connect_string=None, schema=None, show_progress=False,
                                      drop_empty_columns=False):
-        self.logging.info("inserting records")
+        self.logging.info("inserting")
 
         exporter = PostgresExporter(self, fields_to_dump,
                                     schema, psycopg2_connect_string,
@@ -802,12 +836,16 @@ class FP5File(object):
         exporter.run()
 
         if exporter.sampled_errors_for_fields:
-            print(exporter.format_errors())
+            print(exporter.format_errors(), file=sys.stderr)
+
+            return False
+
+        return True
 
     def update_records_into_postgres(self, fields_to_dump, first_record_to_process=None, table_name=None,
                                      psycopg2_connect_string=None, schema=None, show_progress=False,
                                      drop_empty_columns=False):
-        self.logging.info("updating records")
+        self.logging.info("updating")
 
         exporter = PostgresExporter(self, fields_to_dump,
                                     schema, psycopg2_connect_string,
@@ -819,11 +857,15 @@ class FP5File(object):
         exporter.run()
 
         if exporter.sampled_errors_for_fields:
-            print(exporter.format_errors())
+            print(exporter.format_errors(), file=sys.stderr)
+
+            return False
+
+        return True
 
     def dump_records_pgsql(self, fields_to_dump, first_record_to_process=None, filename=None, table_name=None,
                            show_progress=False, drop_empty_columns=False):
-        self.logging.info("dumping records")
+        self.logging.info("dumping")
 
         if filename is None:
             filename = os.path.join(self.dirname, self.basename + '.psql')
@@ -836,10 +878,14 @@ class FP5File(object):
         exporter.run()
 
         if exporter.sampled_errors_for_fields:
-            print(exporter.format_errors())
+            print(exporter.format_errors(), file=sys.stderr)
+
+            return False
+
+        return True
 
 
-FieldExportDefinition = namedtuple('FieldExportDefinition', ["field_id", "field", "type", "psql_type", "psql_cast",
+FieldExportDefinition = namedtuple('FieldExportDefinition', ["field_id", "field", "type", "psql_type", "psql_cast", "pg_oid",
                                                              "is_array", "split", "subscript",
                                                              "is_enum", "enum", "pos"])
 

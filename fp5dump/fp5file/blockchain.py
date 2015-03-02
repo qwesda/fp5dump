@@ -4,6 +4,28 @@ from array import array
 from collections import OrderedDict
 
 
+def split_field_and_sub_ref(src):
+    field_ref_len = None
+
+    if 0x00 <= src[0] <= 0x7F:
+        field_ref_len = 1
+    elif 0x80 <= src[0] <= 0xBF:
+        field_ref_len = 2
+    elif 0xC0 <= src[0] <= 0xDF:
+        field_ref_len = 3
+    elif 0xE0 <= src[0] <= 0xEF:
+        field_ref_len = 4
+    elif 0xF0 <= src[0] <= 0xF7:
+        field_ref_len = 5
+    else:
+        return None, None
+
+    if field_ref_len < len(src):
+        return src[:field_ref_len], src[field_ref_len:]
+    else:
+        return src[:field_ref_len], None
+
+
 def decode_field_and_sub_ref(src):
     field_ref = None
     field_ref_len = None

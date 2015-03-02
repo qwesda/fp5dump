@@ -2,11 +2,11 @@
 class DataField(object):
     """"""
 
-    def __init__(self, id, id_bytes, name):
+    def __init__(self, field_id, field_id_bin, name):
         super(DataField, self).__init__()
 
-        self.id = id
-        self.id_bytes = id_bytes
+        self.field_id = field_id
+        self.field_id_bin = field_id_bin
         self.name = name
         self.label = ""
         self.label_bytes = b""
@@ -60,4 +60,4 @@ class DataField(object):
             return "::" + self.psql_type + "[]" if self.repetitions > 1 else ""
 
     def __repr__(self):
-        return "0x%04X %9s[%2d] %5s '%s'" % (self.id, self.typename, self.repetitions, self.stored, self.label)
+        return "0x%04X %9s[%2d] %5s '%s'" % (self.field_id, self.typename, self.repetitions, self.stored, self.label)

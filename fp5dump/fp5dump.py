@@ -4,7 +4,9 @@ import re
 import os
 import argparse
 import logging
+import binascii
 import psycopg2
+import sys
 
 try:
     from fp5file.fp5file import FP5File, FieldExportDefinition
@@ -29,26 +31,34 @@ def __list_fields__(args):
 
             print(field)
 
+    return True
+
 
 def __count_records__(args):
     with FP5File(args.input.name) as fp5file:
         print(fp5file.records_count)
 
+    return True
+
 
 def __dump_blocks__(args):
     if 'index' in args.type:
         with FP5File(args.input.name) as fp5file:
-            fp5file.dump_index_blocks(args.output)
+            return fp5file.dump_index_blocks(args.output)
     elif 'data' in args.type:
         if args.with_path:
-            if re.match("^(([0-9a-fA-F]{2})+/)?([0-9a-fA-F]{2})+$", args.with_path):
+            match = re.match("^'?((([0-9a-fA-F]{2})+/)?([0-9a-fA-F]{2})+)'?$", args.with_path)
+
+            if match:
                 with FP5File(args.input.name) as fp5file:
-                    fp5file.dump_blocks_with_path(args.with_path.encode("ascii"), args.output)
+                    return fp5file.dump_blocks_with_path([binascii.unhexlify(x) for x in match.group(1).split('/')], args.output)
             else:
-                print("path '%s' is invalid, should look like: '05', '03/02', '04/05/03'" % (args.with_path))
+                logging.error("path '%s' is invalid, should look like: '05', '03/02', '04/05/03'" % args.with_path)
+
+                return False
         else:
             with FP5File(args.input.name) as fp5file:
-                fp5file.dump_data_blocks(args.output)
+                return fp5file.dump_data_blocks(args.output)
 
 
 def __dump_records__(args):
@@ -67,18 +77,20 @@ def __dump_records__(args):
 
 
         if fields_to_dump is None:
-            logging.error("no fields to dump")
-            return
+            logging.warning("no fields to dump")
+
+            return True
 
         if fp5file.records_count == 0:
-            logging.error("no records to dump")
-            return
+            logging.warning("no records to dump")
 
-        fp5file.dump_records_pgsql(fields_to_dump,
-                                   filename=args.output,
-                                   drop_empty_columns=args.drop_empty_columns,
-                                   show_progress=args.progress,
-                                   table_name=args.table)
+            return True
+
+        return fp5file.dump_records_pgsql(fields_to_dump,
+                                          filename=args.output,
+                                          drop_empty_columns=args.drop_empty_columns,
+                                          show_progress=args.progress,
+                                          table_name=args.table)
 
 
 def __insert_records__(args):
@@ -96,32 +108,38 @@ def __insert_records__(args):
             fields_to_dump = fp5file.load_export_definition(args.definition)
 
         if not fields_to_dump:
-            logging.error("no fields to dump")
-            return
+            logging.warning("no fields to dump")
+
+            return True
 
         if fp5file.records_count == 0:
-            logging.error("no records to dump")
-            return
+            logging.warning("no records to dump")
+
+            return True
 
         if args.schema is not None:
-            fp5file.insert_records_into_postgres(fields_to_dump,
-                                                 psycopg2_connect_string=args.pg,
-                                                 schema=args.schema,
-                                                 drop_empty_columns=args.drop_empty_columns,
-                                                 show_progress=args.progress,
-                                                 table_name=args.table)
+            return fp5file.insert_records_into_postgres(fields_to_dump,
+                                                        psycopg2_connect_string=args.pg,
+                                                        schema=args.schema,
+                                                        drop_empty_columns=args.drop_empty_columns,
+                                                        show_progress=args.progress,
+                                                        table_name=args.table)
         else:
             logging.error("a schema has to be specified if records should be inserted into a db")
+
+            return False
 
 
 def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connect_string, schema, limit_updated_rows):
     if fields_to_dump is None:
-        logging.error("no fields to dump")
-        return
+        logging.warning("no fields to dump")
+
+        return True
 
     if fp5file.records_count == 0:
-        logging.error("no records to dump")
-        return
+        logging.warning("no records to dump")
+
+        return True
 
     with psycopg2.connect(psycopg2_connect_string) as conn:
         with conn.cursor() as cursor:
@@ -155,8 +173,8 @@ def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connec
                     column_infos = set(column_info for column_info in cursor.fetchall())
 
                     normalized_dest_column_infos = [('fm_id', 'bigint'), ('fm_mod_id', 'bigint')]
-                    for (field_id, field_def) in fields_to_dump.items():
-                        normalized_dest_column_infos.append((fp5file.fields[field_id].label, field_def.psql_cast[2:] if field_def.is_array or field_def.is_enum else field_def.psql_type))
+                    for (field_id_bin, field_def) in fields_to_dump.items():
+                        normalized_dest_column_infos.append((fp5file.fields[field_id_bin].label, field_def.psql_cast[2:] if field_def.is_array or field_def.is_enum else field_def.psql_type))
 
                     if set(column_infos) != set(normalized_dest_column_infos):
                         logging.info("the table to be updated has a different set of columns then the requested export definition")
@@ -198,34 +216,58 @@ def __update_records__(args):
             fields_to_dump = fp5file.load_export_definition(args.definition)
 
         if fields_to_dump is None:
-            logging.error("no fields to dump")
-            return
+            logging.warning("no fields to dump")
+
+            return True
 
         if fp5file.records_count == 0:
-            logging.error("no records to dump")
-            return
+            logging.warning("no records to dump")
+
+            return True
 
         action, first_record_to_process = __update_records_determine_action__(fp5file, fields_to_dump, args.pg, args.schema, args.limit_updated_rows)
 
         if action == 'full':
-            fp5file.insert_records_into_postgres(fields_to_dump,
-                                                 psycopg2_connect_string=args.pg,
-                                                 schema=args.schema,
-                                                 show_progress=args.progress,
-                                                 table_name=args.table)
+            return fp5file.insert_records_into_postgres(fields_to_dump,
+                                                        psycopg2_connect_string=args.pg,
+                                                        schema=args.schema,
+                                                        show_progress=args.progress,
+                                                        table_name=args.table)
         elif action == 'update':
-            fp5file.update_records_into_postgres(fields_to_dump,
-                                                 psycopg2_connect_string=args.pg,
-                                                 schema=args.schema,
-                                                 show_progress=args.progress,
-                                                 table_name=args.table)
+            return fp5file.update_records_into_postgres(fields_to_dump,
+                                                        psycopg2_connect_string=args.pg,
+                                                        schema=args.schema,
+                                                        show_progress=args.progress,
+                                                        table_name=args.table)
         elif action == 'partial-update':
-            fp5file.update_records_into_postgres(fields_to_dump,
-                                                 psycopg2_connect_string=args.pg,
-                                                 schema=args.schema,
-                                                 first_record_to_process=first_record_to_process,
-                                                 show_progress=args.progress,
-                                                 table_name=args.table)
+            return fp5file.update_records_into_postgres(fields_to_dump,
+                                                        psycopg2_connect_string=args.pg,
+                                                        schema=args.schema,
+                                                        first_record_to_process=first_record_to_process,
+                                                        show_progress=args.progress,
+                                                        table_name=args.table)
+
+
+class SplitStreamHandler(logging.Handler):
+    def __init__(self):
+        logging.Handler.__init__(self)
+
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            if record.levelno < logging.WARNING:
+                stream = sys.stdout
+            else:
+                stream = sys.stderr
+            fs = "%s\n"
+
+            stream.write(fs % msg)
+
+            stream.flush()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except:
+            self.handleError(record)
 
 
 def main():
@@ -479,7 +521,7 @@ def main():
     logger = logging.getLogger('fp5dump')
 
     logging_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    logging_handler = logging.StreamHandler()
+    logging_handler = SplitStreamHandler()
     logging_handler.setFormatter(logging_formatter)
 
     if args.verbosity >= 2:
@@ -492,19 +534,26 @@ def main():
     logger.addHandler(logging_handler)
 
     if args.action == "list-fields":
-        __list_fields__(args)
+        result_ok = __list_fields__(args)
     elif args.action == "count-records":
-        __count_records__(args)
+        result_ok = __count_records__(args)
     elif args.action == "dump-blocks":
-        __dump_blocks__(args)
+        result_ok = __dump_blocks__(args)
     elif args.action == "dump-records":
-        __dump_records__(args)
+        result_ok = __dump_records__(args)
     elif args.action == "insert-records":
-        __insert_records__(args)
+        result_ok = __insert_records__(args)
     elif args.action == "update-records":
-        __update_records__(args)
+        result_ok = __update_records__(args)
     else:
         main_parser.print_help()
+
+        result_ok = True
+
+    if result_ok:
+        sys.exit(0)
+    else:
+        sys.exit(-1)
 
 
 if __name__ == '__main__':

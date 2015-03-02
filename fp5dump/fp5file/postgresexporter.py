@@ -1,16 +1,21 @@
-from collections import OrderedDict
+from collections import OrderedDict, namedtuple
 from io import BytesIO
-import locale
-from struct import pack
+from struct import pack, pack_into
 import sys
 import time
+import datetime
 import uuid
 import psycopg2
 import psycopg2.extras
-from binascii import unhexlify
+import struct
 
-from .blockchain import decode_vli, decode_field_and_sub_ref, encode_vli
+from .blockchain import decode_vli, encode_vli, split_field_and_sub_ref
 from .exporter import Exporter
+
+
+FieldExportDefinition = namedtuple('FieldExportDefinition', ["field_id", "field", "type", "psql_type", "psql_cast", "pg_oid",
+                                                             "is_array", "split", "subscript",
+                                                             "is_enum", "enum", "pos"])
 
 
 class PostgresExporter(Exporter):
@@ -22,25 +27,34 @@ class PostgresExporter(Exporter):
         self.update_table = update_table
         self.psycopg2_connect_string = psycopg2_connect_string
 
-    def create_enum(self, conn, enum_name, enum_def):
+        self.records_to_update = []
+
+        self.copy_stream = BytesIO()
+        self.copy_stream.write(pack('>11sii', b'PGCOPY\n\377\r\n\0', 0, 0))
+
+        self.pgepoch = datetime.date(2000, 1, 1)
+
+    def create_enum(self, conn, export_def):
         try:
             with conn.cursor() as cursor:
-                cursor.execute('SELECT enum_range(null::"%s")' % enum_name)
+                cursor.execute('SELECT enum_range(null::"%s")' % export_def.psql_type)
                 existing_enum_values = cursor.fetchall()[0][0]
 
-                for (key, value)in enum_def.items():
+                for (key, value)in export_def.enum.items():
+                    key = key.decode()
+
                     if key not in existing_enum_values and key != "*":
                         try:
                             conn.set_isolation_level(0)
-                            cursor.execute('ALTER TYPE "%s" ADD VALUE \'%s\';' % (enum_name, key))
+                            cursor.execute('ALTER TYPE "%s" ADD VALUE \'%s\';' % (export_def.psql_type, key))
                             conn.commit()
                             conn.set_isolation_level(1)
 
-                            self.logging.debug("added '%s' to enum '%s'" % (key, enum_name))
+                            self.logging.debug("added '%s' to enum '%s'" % (key, export_def.psql_type))
                         except Exception as e:
                             conn.rollback()
 
-                            self.logging.error("could add value '%s' to enum '%s'\n\t%s" % (key, enum_name, e))
+                            self.logging.error("could add value '%s' to enum '%s'\n\t%s" % (key, export_def.psql_type, e))
 
                             return False
 
@@ -49,22 +63,36 @@ class PostgresExporter(Exporter):
 
             try:
                 with conn.cursor() as cursor:
-                    cursor.execute('CREATE TYPE "%s" AS ENUM(%s)' % (enum_name, (", ".join("'%s'" % key for (key, value) in enum_def.items()))))
+                    cursor.execute('CREATE TYPE "%s" AS ENUM(%s)' % (export_def.psql_type, (", ".join("'%s'" % key.decode() for (key, value) in export_def.enum.items()))))
                     conn.commit()
 
-                    self.logging.debug("created enum '%s'" % enum_name)
+                    self.logging.debug("created enum '%s'" % export_def.psql_type)
             except Exception as e:
                 conn.rollback()
 
-                self.logging.error("could not create enum '%s'\n\t%s" % (enum_name, e))
+                self.logging.error("could not create enum '%s'\n\t%s" % (export_def.psql_type, e))
 
                 return False
 
-        return True
+        with conn.cursor() as cursor:
+            try:
+                cursor.execute("""SELECT pg_type.oid FROM pg_type INNER JOIN pg_namespace ON pg_namespace.oid = pg_type.typnamespace
+                                  WHERE pg_namespace.nspname = %s AND pg_type.typname = %s;""", (self.schema, export_def.psql_type))
+
+                return FieldExportDefinition(export_def.field_id, export_def.field, export_def.type,
+                                             export_def.psql_type, export_def.psql_cast, cursor.fetchone()[0],
+                                             export_def.is_array, export_def.split, export_def.subscript,
+                                             export_def.is_enum, export_def.enum, export_def.pos)
+            except Exception as e:
+                conn.rollback()
+
+                self.logging.error("could not determine oid of '%s'" % export_def.psql_type)
+
+                return False
 
     def create_table(self, conn):
         try:
-            pgsql_fields = [' "fm_id" bigint', ' "fm_mod_id" bigint']
+            pgsql_fields = [' "fm_id" bigint']
 
             for export_def in self.export_definition.values():
                 if export_def.is_array and export_def.is_enum:
@@ -76,6 +104,7 @@ class PostgresExporter(Exporter):
                 else:
                     pgsql_fields.append(' "%s" %s' % (export_def.field.label, export_def.psql_type))
 
+            pgsql_fields.append(' "fm_mod_id" bigint')
             pgsql_fields.append('CONSTRAINT "_%s_pkey" PRIMARY KEY ("fm_id")' % self.table_name)
 
             with conn.cursor() as cursor:
@@ -95,10 +124,15 @@ class PostgresExporter(Exporter):
     def create_table_and_enums(self, conn):
         handeled_enums = set()
 
-        for export_def in self.export_definition.values():
+        for export_def in list(self.export_definition.values()):
             if export_def.is_enum and export_def.psql_type not in handeled_enums:
-                if not self.create_enum(conn, export_def.psql_type, export_def.enum):
+                new_export_def = self.create_enum(conn, export_def)
+
+                if not new_export_def:
                     return False
+
+                self.export_definition[export_def.field_id] = new_export_def
+                handeled_enums.add(new_export_def.psql_type)
 
         if not self.update_table:
             if not self.create_table(conn):
@@ -111,10 +145,10 @@ class PostgresExporter(Exporter):
 
                         if field_def.is_enum:
                             cursor.execute('ALTER TABLE "%s" ALTER COLUMN "%s" TYPE %s USING "%s"::text%s;' % (
-                                                self.table_name, field_to_export.label,
-                                                field_def.psql_cast[2:], field_to_export.label,
-                                                field_def.psql_cast)
-                                            )
+                                self.table_name, field_to_export.label,
+                                field_def.psql_cast[2:], field_to_export.label,
+                                field_def.psql_cast)
+                            )
                             conn.commit()
 
         return True
@@ -132,24 +166,22 @@ class PostgresExporter(Exporter):
         with conn.cursor() as cursor:
             temp_table_name = "%s_del" % self.table_name
 
-            # cursor.execute('CREATE TEMP TABLE "%s" ("fm_id" bigint);' % temp_table_name)
             cursor.execute('CREATE TABLE "%s" ("fm_id" bigint PRIMARY KEY);' % temp_table_name)
 
-            cope_stream = BytesIO()
-            cope_stream.write(pack('>11sii', b'PGCOPY\n\377\r\n\0', 0, 0))
+            copy_stream = BytesIO()
+            copy_stream.write(pack('>11sii', b'PGCOPY\n\377\r\n\0', 0, 0))
 
             for fm_id in self.fp5file.records_index:
-                cope_stream.write(pack('>hiq', 1, 8, fm_id))
-                # cursor.execute('INSERT INTO "%s" VALUES (%s);' % (temp_table_name, fm_id))
+                copy_stream.write(struct.pack('>hiq', 1, 8, fm_id))
 
-            cope_stream.write(pack('!h', -1))
-            cope_stream.seek(0)
+            copy_stream.write(pack('!h', -1))
+            copy_stream.seek(0)
 
-            cursor.copy_expert('COPY "%s" FROM STDIN WITH BINARY' % (temp_table_name), cope_stream)
+            cursor.copy_expert('COPY "%s" FROM STDIN WITH BINARY' % (temp_table_name), copy_stream)
 
-            cursor.execute('DELETE FROM "%s"."%s" WHERE fm_id NOT IN (SELECT * FROM "%s");' % (self.schema, self.table_name, temp_table_name))
+            # cursor.execute('DELETE FROM "%s"."%s" WHERE fm_id NOT IN (SELECT * FROM "%s");' % (self.schema, self.table_name, temp_table_name))
 
-            self.deleted_records = cursor.rowcount
+            # self.deleted_records = cursor.rowcount
 
             conn.commit()
 
@@ -164,7 +196,9 @@ class PostgresExporter(Exporter):
             self.table_name = self.fp5file.db_name
 
         self.create_schema(conn)
-        self.create_table_and_enums(conn)
+
+        if not self.create_table_and_enums(conn):
+            return False
 
         self.start_time = self.eta_last_updated = time.time()
 
@@ -176,65 +210,33 @@ class PostgresExporter(Exporter):
         if self.update_table:
             self.delete_records(conn)
 
-    def flush_batch(self, conn, batch_values, batch_fields_present):
+        return True
+
+    def flush_batch(self, conn):
         with conn.cursor() as cursor:
-            insert_prepare_statement = 'PREPARE batch_insert AS INSERT INTO "%s"."%s" ("fm_id", "fm_mod_id", ' % (self.schema, self.table_name)
-            insert_prepare_statement += ', '.join('"%s"' % self.export_definition[field_ref].field.label for field_ref in batch_fields_present)
-            insert_prepare_statement += ') VALUES ($1, $2'
+            self.copy_stream.write(pack('!h', -1))
+            self.copy_stream.seek(0)
 
-            update_prepare_statement = 'PREPARE batch_update AS UPDATE "%s"."%s" SET "fm_mod_id" = $2' % (self.schema, self.table_name)
+            if self.records_to_update:
+                cursor.execute('DELETE FROM "%s"."%s" WHERE fm_id IN %%s;' % (self.schema, self.table_name), (tuple(self.records_to_update), ))
 
-            insert_execute_statement = 'EXECUTE batch_insert (%s, %s'
-            update_execute_statement = 'EXECUTE batch_update (%s, %s'
+                self.records_to_update.clear()
+                # conn.commit()
 
-            for i, field_ref in enumerate(batch_fields_present):
-                export_def = self.export_definition[field_ref]
+            cursor.copy_expert('COPY "%s"."%s" FROM STDIN WITH BINARY' % (self.schema, self.table_name), self.copy_stream)
 
-                if export_def.is_enum or export_def.is_array:
-                    insert_execute_statement += ', %%s%s' % export_def.psql_cast
-                    update_execute_statement += ', %%s%s' % export_def.psql_cast
-                else:
-                    insert_execute_statement += ', %s'
-                    update_execute_statement += ', %s'
+            # conn.commit()
 
-                insert_prepare_statement += ', $%d' % (i + 3)
-                update_prepare_statement += ', "%s" = $%d' % (self.export_definition[field_ref].field.label, i + 3)
-
-            insert_prepare_statement += ');'
-            update_prepare_statement += ' WHERE "fm_id" = $1;'
-
-            insert_execute_statement += ');'
-            update_execute_statement += ');'
-
-            cursor.execute(insert_prepare_statement)
-            cursor.execute(update_prepare_statement)
-
-            batch_fields_count = len(batch_fields_present) + 2
-            batch_fields_count_check = batch_fields_count + 1
-
-            for record_values in batch_values:
-                update = record_values[0]
-                record_values = record_values[1:] + [None] * (batch_fields_count_check - len(record_values))
-
-                if not update:
-                    cursor.execute(insert_execute_statement, record_values)
-                else:
-                    cursor.execute(update_execute_statement, record_values)
-
-            cursor.execute('DEALLOCATE batch_insert;')
-            cursor.execute('DEALLOCATE batch_update;')
-
-            conn.commit()
+            self.copy_stream.close()
 
     def run(self):
         try:
             with psycopg2.connect(self.psycopg2_connect_string) as conn:
                 with conn.cursor() as cursor:
-                    self.pre_run_actions(conn)
+                    if not self.pre_run_actions(conn):
+                        return False
 
-                    batch_values = []
-                    batch_fields_present = []
-                    table_fields_present = set()
+                    field_count = len(self.export_definition) + 2
 
                     cursor.execute("""PREPARE get_mod_id AS SELECT "fm_mod_id" FROM "%s"."%s" WHERE "fm_id" = $1;""" % (self.schema, self.table_name))
 
@@ -265,81 +267,96 @@ class PostgresExporter(Exporter):
                                 update_record = True
 
                         # prepare values for insert/update statement
-                        values = [update_record, record_id, mod_id] + ([None] * len(batch_fields_present))
 
-                        for (field_ref_bin, field_value) in record_tokens.items():
-                            (field_ref, sub_field_ref) = decode_field_and_sub_ref(field_ref_bin)
+                        self.copy_stream.write(pack('>HIq', field_count, 8, record_id))
+                        had_errors = False
 
-                            export_def = None
+                        values = OrderedDict()
 
-                            if field_ref:
-                                for _export_def in self.export_definition.values():
-                                    if field_ref == _export_def.field.id:
-                                        export_def = _export_def
+                        for (field_id_combined_bin, field_value) in record_tokens.items():
+                            field_id_bin, sub_field_id_bin = split_field_and_sub_ref(field_id_combined_bin)
 
-                                        if field_ref not in batch_fields_present:
-                                            batch_fields_present.append(field_ref)
-                                            values.append(None)
+                            if field_id_bin in self.export_definition:
+                                export_def = self.export_definition[field_id_bin]
 
-                                        break
+                                if export_def.field.repetitions > 1:
+                                    if not sub_field_id_bin:
+                                        sub_field_id_bin = b'\x01'
 
-                            if export_def:
-                                if type(field_value) is OrderedDict:
-                                    if b'\x00\x00' in field_value:
-                                        field_value = field_value[b'\x00\x00']
+                                    sub_field_id = decode_vli(sub_field_id_bin) - 1
 
-                                value = field_value.decode(self.fp5file.encoding)
+                                    if export_def.subscript is not None:
+                                        if sub_field_id == export_def.subscript:
+                                            values[field_id_bin] = field_value
+                                    else:
+                                        if field_id_bin not in values:
+                                            values[field_id_bin] = [None] * export_def.field.repetitions
 
-                                value_pos = batch_fields_present.index(export_def.field_id) + 3
-
-                                if export_def.split:
-                                    values[value_pos] = value.splitlines()
-                                elif export_def.subscript is not None:
-                                    if sub_field_ref == export_def.subscript:
-                                        values[value_pos] = value
-                                elif not export_def.is_array:
-                                    values[value_pos] = value
+                                        values[field_id_bin][sub_field_id] = field_value
+                                elif export_def.split:
+                                    values[field_id_bin] = field_value.splitlines()
                                 else:
-                                    if values[value_pos] is None:
-                                        values[value_pos] = [None] * export_def.field.repetitions
+                                    values[field_id_bin] = field_value
 
-                                    values[value_pos][sub_field_ref - 1] = value
+                        for field_id_bin, export_def in self.export_definition.items():
+                            if field_id_bin in values:
+                                value = values[field_id_bin]
 
-                        # convert values
-                        for field_ref in batch_fields_present:
-                            value_pos = batch_fields_present.index(field_ref) + 3
-                            export_def = self.export_definition[field_ref]
+                                if type(value) is list:
+                                    stream_pos_before = self.copy_stream.tell()
+                                    self.copy_stream.write(b'\xfe\xfe\xfe\xfe')
 
-                            try:
-                                values[value_pos] = self.values_for_field_type(values[value_pos], export_def)
-                            except ValueError:
-                                self.aggregate_errors(values, export_def, values[value_pos], batch_fields_present)
+                                    self.copy_stream.write(pack('>IIIII', 1, 1 if None in value else 0, export_def.pg_oid, len(value), 1))
 
-                                values[value_pos] = None
+                                    for sub_value in value:
+                                        if sub_value is None or (sub_value == b'' and export_def.split):
+                                            self.copy_stream.write(b'\xff\xff\xff\xff')
+                                        else:
+                                            try:
+                                                self.values_for_field_type(sub_value, export_def)
+                                            except ValueError:
+                                                had_errors = True
+                                                self.copy_stream.write(b'\xff\xff\xff\xff')
+                                                self.aggregate_errors(export_def, record_id, sub_value)
 
-                        # push values
-                        batch_values.append(values)
+                                    stream_pos_end = self.copy_stream.tell()
+
+                                    self.copy_stream.seek(stream_pos_before)
+                                    self.copy_stream.write(pack('>I', stream_pos_end - stream_pos_before - 4))
+                                    self.copy_stream.seek(stream_pos_end)
+                                else:
+                                    try:
+                                        self.values_for_field_type(value, export_def)
+                                    except ValueError:
+                                        had_errors = True
+                                        self.copy_stream.write(b'\xff\xff\xff\xff')
+                                        self.aggregate_errors(field_id_bin, record_id, values[field_id_bin])
+                            else:
+                                self.copy_stream.write(b'\xff\xff\xff\xff')
+
+                        if had_errors:
+                            self.copy_stream.write(pack('>Iq', 8, -mod_id if mod_id > 0 else -1))
+                        else:
+                            self.copy_stream.write(pack('>Iq', 8, mod_id))
 
                         if update_record:
                             self.updated_records += 1
+                            self.records_to_update.append(record_id)
                         else:
                             self.inserted_records += 1
 
                         # flush
-                        if len(batch_values) >= 100:
-                            self.flush_batch(conn, batch_values, batch_fields_present)
+                        if self.copy_stream.tell() >= 1048576:
+                            self.flush_batch(conn)
 
-                            table_fields_present.update(batch_fields_present)
-                            batch_fields_present.clear()
-                            batch_values.clear()
+                            self.copy_stream = BytesIO()
+                            self.copy_stream.write(pack('>11sii', b'PGCOPY\n\377\r\n\0', 0, 0))
 
                     # final flush
-                    if batch_values:
-                        self.flush_batch(conn, batch_values, batch_fields_present)
+                    if self.copy_stream.tell() > 19:
+                        self.flush_batch(conn)
 
-                        table_fields_present.update(batch_fields_present)
-                        batch_fields_present.clear()
-                        batch_values.clear()
+                        conn.commit()
 
                     # drop empty column
                     if self.drop_empty_columns and not self.update_table:
@@ -369,59 +386,153 @@ class PostgresExporter(Exporter):
         sys.stdout.flush()
 
         if not self.update_table:
-            self.logging.info("inserted %d records" % self.exported_records)
+            self.logging.info("inserted %d" % self.inserted_records)
         else:
-            self.logging.info("inserted %d / updated %d / deleted %d / processed %d records" % (self.inserted_records, self.updated_records, self.deleted_records, self.processed_records))
+            self.logging.info("inserted %d / updated %d / deleted %d / processed %d" % (self.inserted_records, self.updated_records, self.deleted_records, self.processed_records))
 
-    def values_for_field_type(self, value, field_def):
-        if type(value) is list:
-            sub_values = []
-
-            for sub_value in value:
-                if sub_value is not None and sub_value != '':
-                    sub_values.append(self.values_for_field_type(sub_value, field_def))
-                else:
-                    sub_values.append(None)
-
-            return sub_values
+    def values_for_field_type(self, value, export_def):
+        if type(value) is OrderedDict and b'\x00\x00' in value:
+            value = value[b'\x00\x00']
 
         if value is None:
-            return None
+            self.copy_stream.write(b'\xff\xff\xff\xff')
+        elif export_def.psql_type == "text":
+            value = value.replace(b'\x00', b'').decode(self.fp5file.encoding).encode()
 
-        if field_def.psql_type == "text":
-            return value
-        elif field_def.psql_type == "integer":
-            return int(value)
-        elif field_def.psql_type == "numeric":
-            return locale.atof(value)
-        elif field_def.psql_type == "date":
-            date, check = self.ptd_parser.parseDT(value)
+            self.copy_stream.write(pack('>I', len(value)))
+            self.copy_stream.write(value)
+        elif export_def.psql_type == "integer":
+            self.copy_stream.write(pack('>Ii', 4, int(value)))
+        elif export_def.psql_type == "biginteger":
+            self.copy_stream.write(pack('>Iq', 8, int(value)))
+        elif export_def.psql_type == "numeric":
+            self.copy_stream.write(self.numeric_string_to_postgres_numeric_bytes(value))
+        elif export_def.psql_type == "date":
+            date, check = self.ptd_parser.parseDT(value.decode())
 
             if not check:
                 raise ValueError
 
-            return date
-        elif field_def.psql_type == "uuid":
-            return uuid.UUID(value)
-        elif field_def.psql_type == "boolean":
-            if value.lower() in ('ja', 'yes', 'true', '1', 'ok'):
-                return True
-            elif value.lower() in ('nein', 'no', 'false', '0', ''):
-                return False
+            self.copy_stream.write(pack('>Ii', 4, (date.date() - self.pgepoch).days))
+        elif export_def.psql_type == "uuid":
+            value = uuid.UUID(value.decode())
+
+            self.copy_stream.write(b'\x00\x00\x00\x10')
+            self.copy_stream.write(value.bytes)
+        elif export_def.psql_type == "boolean":
+            if value.lower() in (b'ja', b'yes', b'true', b'1', b'ok'):
+                self.copy_stream.write(b'\x00\x00\x00\x01\x01')
+            elif value.lower() in (b'nein', b'no', b'false', b'0', b''):
+                self.copy_stream.write(b'\x00\x00\x00\x01\x00')
             else:
                 raise ValueError
-        elif field_def.is_enum:
-            catch_all = None
+        elif export_def.is_enum:
+            value = value.upper()
 
-            for enum_key, enum_value in field_def.enum.items():
-                if '*' == enum_key:
-                    catch_all = enum_key
-                elif value.upper() in enum_value:
-                    return enum_key if enum_key != 'NULL' else None
+            for enum_key, enum_value in export_def.enum.items():
+                if b'*' != enum_key and value in enum_value:
+                    if enum_key == b'NULL':
+                        self.copy_stream.write(b'\xff\xff\xff\xff')
+                    else:
+                        self.copy_stream.write(pack('>I', len(enum_key)))
+                        self.copy_stream.write(enum_key)
 
-            if catch_all:
-                return field_def.enum[catch_all] if field_def.enum[catch_all] != 'NULL' else None
+                    break
+            else:
+                if b'*' in export_def.enum:
+                    catch_all = export_def.enum[b'*']
 
-            raise ValueError
+                    if catch_all is None or catch_all == b'NULL':
+                        self.copy_stream.write(b'\xff\xff\xff\xff')
+                    else:
+                        self.copy_stream.write(pack('>I', len(catch_all)))
+                        self.copy_stream.write(catch_all)
+                else:
+                    raise ValueError
 
-        return None
+    def numeric_string_to_postgres_numeric_bytes(self, numeric_string):
+        sign = 0x0000
+
+        found_dp = False
+        found_digits = False
+
+        dweight = -1
+        dscale = 0
+
+        ddigits = 4
+        decdigits = bytearray(len(numeric_string) + 8)
+
+        for char in numeric_string:
+            if not found_digits:
+                if not found_dp:
+                    if char == self.decimal_point_char:
+                        found_dp = True
+                        found_digits = True
+                    elif char == 0x2D:  # '-'
+                        sign = 0x4000
+                    elif char == 0x2B or char == 0x20 or char == 0x09 or char == 0x30:  # '+' or ' ' or '\t' or '0'
+                        pass
+                    elif 0x30 < char <= 0x39:
+                        found_digits = True
+                        decdigits[ddigits] = char - 0x30
+                        ddigits += 1
+
+                        if found_dp:
+                            dscale += 1
+                        else:
+                            dweight += 1
+                    else:
+                        raise ValueError("invalid textual representation for numeric value: '%s'" % numeric_string)
+
+            elif not found_dp:
+                if char == self.decimal_point_char:
+                    found_dp = True
+                elif 0x30 <= char <= 0x39:
+                      found_digits = True
+                      decdigits[ddigits] = char - 0x30
+                      ddigits += 1
+
+                      if found_dp:
+                          dscale += 1
+                      else:
+                          dweight += 1
+                elif char == self.thousands_separator_char:
+                    pass
+                else:
+                    break
+            else:
+               if 48 <= char <= 59:
+                   decdigits[ddigits] = char - 0x30
+                   ddigits += 1
+
+                   if found_dp:
+                       dscale += 1
+                   else:
+                       dweight += 1
+               else:
+                   break
+
+        ddigits -= 4
+
+        if dweight >= 0:
+            weight = (dweight + 4) // 4 - 1
+        else:
+            weight = -((-dweight - 1) // 4 + 1)
+
+        offset = (weight + 1) * 4 - (dweight + 1)
+        ndigits = (ddigits + offset + 4 - 1) // 4
+
+        bytes_needed = 8 + ndigits*2
+        numeric_binary = bytearray(bytes_needed)
+        numeric_binary[0:8] = struct.pack('>IHhHH', bytes_needed, ndigits, weight, sign, dscale)
+
+        i = 4 - offset
+        j = 12
+
+        while ndigits > 0:
+            ndigits -= 1
+            numeric_binary[j:j+2] = struct.pack('>H', ((decdigits[i] * 10 + decdigits[i + 1]) * 10 + decdigits[i + 2]) * 10 + decdigits[i + 3])
+            i += 4
+            j += 2
+
+        return numeric_binary
