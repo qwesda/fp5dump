@@ -2,8 +2,7 @@
 
 import re
 import os.path
-
-from setuptools import setup
+from setuptools import setup, find_packages
 
 _version_re = re.compile(r'__version__\s*=\s*\'\s*(\d+\.\d+\.\d+)\s*\'')
 
@@ -20,7 +19,7 @@ setup(
     version=version,
     license='MIT',
     url='https://github.com/qwesda/Fp5Dump',
-    packages=['fp5dump'],
+    packages=find_packages(),
     description=description,
     long_description=open(os.path.join(os.path.dirname(__file__), 'README.md')).read(),
     install_requires=[
