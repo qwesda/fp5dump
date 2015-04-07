@@ -1,3 +1,4 @@
+from collections import OrderedDict, namedtuple
 import locale
 import os
 import sys
@@ -5,7 +6,7 @@ import time
 from binascii import unhexlify
 import uuid
 
-from .blockchain import decode_vli
+from .blockchain import decode_vli, encode_vli, split_field_and_sub_ref
 from .exporter import Exporter
 
 
@@ -16,6 +17,8 @@ class PsqlExporter(Exporter):
 
         self.filename = filename
 
+        self.output = None
+        self.insert_statement = ""
         self.trans = "".maketrans({
             '\\': '\\\\',
             '\'': '\\\'',
@@ -27,13 +30,19 @@ class PsqlExporter(Exporter):
             '\x00': ''
         })
 
-    def create_enum(self, output, enum_name, enum_def):
-        output.write('CREATE TYPE "%s" AS ENUM(%s); \n' % (enum_name, (", ".join("'%s'" % key for (key, value) in enum_def.items() if key != "*"))))
+    def create_enum(self, enum_name, enum_def):
+        self.output.write('CREATE TYPE "%s" AS ENUM(); \n' % (enum_name))
 
-    def create_table(self, output):
-        pgsql_fields = [' "fm_id" bigint', ' "fm_mod_id" bigint']
+        for enum_value in enum_def.keys():
+            self.output.write("""ALTER TYPE "%s" ADD VALUE IF NOT EXISTS '%s';\n""" % (enum_name, enum_value))
+
+    def create_table(self):
+        pgsql_field_names = ['"fm_id"']
+        pgsql_fields = [' "fm_id" bigint']
 
         for export_def in self.export_definition.values():
+            pgsql_field_names.append('"%s"' % export_def.field.label)
+
             if export_def.is_array and export_def.is_enum:
                 pgsql_fields.append(' "%s" "%s"[]' % (export_def.field.label, export_def.psql_type))
             elif export_def.is_enum:
@@ -43,29 +52,34 @@ class PsqlExporter(Exporter):
             else:
                 pgsql_fields.append(' "%s" %s' % (export_def.field.label, export_def.psql_type))
 
+        pgsql_field_names.append('"fm_mod_id"')
+        pgsql_fields.append(' "fm_mod_id" bigint')
+
         pgsql_fields.append('  CONSTRAINT "_%s_pkey" PRIMARY KEY ("fm_id")' % self.table_name)
 
-        output.write('DROP TABLE IF EXISTS "%s";\n' % self.table_name)
-        output.write('CREATE TABLE IF NOT EXISTS "%s" (\n%s\n);\n\n' % (self.table_name, ',\n'.join(pgsql_fields)))
+        self.output.write('DROP TABLE IF EXISTS "%s";\n' % self.table_name)
+        self.output.write('CREATE TABLE IF NOT EXISTS "%s" (\n%s\n);\n\n' % (self.table_name, ',\n'.join(pgsql_fields)))
 
-    def create_table_and_enums(self, output):
+        self.insert_statement = 'INSERT INTO "%s" (%s) VALUES \n(' % (self.table_name, ', '.join(pgsql_field_names))
+
+    def create_table_and_enums(self):
         handeled_enums = set()
 
         for export_def in self.export_definition.values():
             if export_def.is_enum and export_def.psql_type not in handeled_enums:
-                self.create_enum(output, export_def.psql_type, export_def.enum)
+                self.create_enum(export_def.psql_type, export_def.enum)
 
                 handeled_enums.add(export_def.psql_type)
 
-        self.create_table(output)
+        self.create_table()
 
-    def pre_run_actions(self, output):
+    def pre_run_actions(self):
         self.set_locale()
 
         if self.table_name is None:
             self.table_name = self.fp5file.db_name
 
-        self.create_table_and_enums(output)
+        self.create_table_and_enums()
 
         self.start_time = self.eta_last_updated = time.time()
 
@@ -74,123 +88,103 @@ class PsqlExporter(Exporter):
         if self.first_record_to_process is not None:
             self.records_to_process_count -= self.fp5file.records_index.index(self.first_record_to_process)
 
-    def flush_batch(self, output, batch_values, batch_fields_present):
-        output.write('INSERT INTO "%s" ("fm_id", "fm_mod_id", ' % self.table_name)
-        output.write(', '.join('"%s"' % self.export_definition[field_ref].field.label for field_ref in batch_fields_present))
-        output.write(') VALUES (\n\t')
-
-        batch_count = len(batch_values)
-        batch_counter = 0
-
-        for record_values in batch_values:
-            output.write("%d,\n\t" % record_values[0])
-            output.write("%d,\n\t" % record_values[1])
-
-            i = 2
-            last_record_value_index = len(record_values) - 1
-            last_batch_index = len(batch_fields_present) + 2 - 1
-
-            while i <= last_batch_index:
-                if i <= last_record_value_index:
-                    output.write(record_values[i])
-                else:
-                    output.write("NULL")
-
-                if i != last_batch_index:
-                    output.write(",\n\t")
-
-                i += 1
-
-            batch_counter += 1
-
-            output.write('\n), (\n\t' if batch_counter != batch_count else '\n);\n\n')
-
     def run(self):
         with open(os.path.abspath(os.path.expanduser(self.filename)), "w", encoding="utf8") as output:
-            self.pre_run_actions(output)
+            self.output = output
 
-            batch_values = []
-            batch_fields_present = []
+            self.pre_run_actions()
+
+            if self.first_record_to_process is not None:
+                start_node_path = b'\x05/' + encode_vli(self.first_record_to_process)
+            else:
+                start_node_path = None
+
             table_fields_present = set()
+            token_ids_to_return = set(self.export_definition.keys())
 
-            for record_tokens in self.fp5file.get_sub_data_with_path(b'05', first_sub_record_to_export=self.first_record_to_process):
-                record_id = unhexlify(record_tokens[0].path.split(b'/')[1])
-                record_id = decode_vli(record_id)
+            self.output.write(self.insert_statement)
 
-                record_path = b'/'.join(record_tokens[0].path.split(b'/')[:2])
+            for (record_id_bin, record_tokens) in self.fp5file.data.sub_nodes(b'\x05', start_node_path=start_node_path, token_ids_to_return=token_ids_to_return):
+                # progress counter
+                self.update_progress()
 
-                values = [record_id, 0] + ([None] * len(batch_fields_present))
-                #
-                # for record_token in record_tokens:
-                #     export_def = None
-                #     field_ref = None
-                #
-                #     if record_token.type == TokenType.xC0:
-                #         continue
-                #     elif record_token.type == TokenType.xFC:
-                #         values[1] = int.from_bytes(record_token.data, byteorder='big')
-                #
-                #         continue
-                #     elif record_path == record_token.path:
-                #         field_ref = record_token.field_ref
-                #     elif len(record_token.path.split(b'/')) == 3:
-                #         field_ref = decode_vli(unhexlify(b'/'.join(record_token.path.split(b'/')[2:])))
-                #     else:
-                #         continue
-                #
-                #     if field_ref:
-                #         for _export_def in self.export_definition.values():
-                #             if field_ref == _export_def.field.id:
-                #                 export_def = _export_def
-                #
-                #                 if field_ref not in batch_fields_present:
-                #                     batch_fields_present.append(field_ref)
-                #                     values.append(None)
-                #
-                #                 break
-                #
-                #     if export_def:
-                #         value = record_token.data.decode(self.fp5file.encoding)
-                #
-                #         value_pos = batch_fields_present.index(export_def.field_id) + 2
-                #
-                #         if export_def.split:
-                #             values[value_pos] = value.splitlines()
-                #         elif export_def.subscript is not None:
-                #             if record_token.field_sub_ref == export_def.subscript:
-                #                 values[value_pos] = value
-                #         elif not export_def.is_array:
-                #             values[value_pos] = value
-                #         else:
-                #             if values[value_pos] is None:
-                #                 values[value_pos] = [None] * export_def.field.repetitions
-                #
-                #             values[value_pos][record_token.field_sub_ref - 1] = value
+                # get basic record infos
+                record_id = decode_vli(record_id_bin)
+                mod_id = int.from_bytes(record_tokens[b'\xfc'], byteorder='big') if b'\xfc' in record_tokens else 0
 
-                for field_ref in batch_fields_present:
-                    value_pos = batch_fields_present.index(field_ref) + 2
-                    export_def = self.export_definition[field_ref]
+                output.write("%d, " % record_id)
 
-                    try:
-                        values[value_pos] = self.values_for_field_type(values[value_pos], export_def)
-                    except ValueError:
-                        self.aggregate_errors(values, export_def, values[value_pos], batch_fields_present)
+                had_errors = False
 
-                        values[value_pos] = "NULL"
+                values = OrderedDict()
 
-                batch_values.append(values)
+                for (field_id_combined_bin, field_value) in record_tokens.items():
+                    field_id_bin, sub_field_id_bin = split_field_and_sub_ref(field_id_combined_bin)
 
-                self.exported_records += 1
+                    if field_id_bin in self.export_definition:
+                        export_def = self.export_definition[field_id_bin]
 
-                if self.exported_records % 100 == 0 or self.exported_records == self.records_to_process_count:
-                    self.flush_batch(output, batch_values, batch_fields_present)
+                        if export_def.field.repetitions > 1:
+                            if not sub_field_id_bin:
+                                sub_field_id_bin = b'\x01'
 
-                    table_fields_present.update(batch_fields_present)
-                    batch_fields_present.clear()
-                    batch_values.clear()
+                            sub_field_id = decode_vli(sub_field_id_bin) - 1
 
-                if self.show_progress and (self.exported_records % 100 == 0):
-                    self.update_progress()
+                            if export_def.subscript is not None:
+                                if sub_field_id == export_def.subscript:
+                                    values[field_id_bin] = field_value
+                            else:
+                                if field_id_bin not in values:
+                                    values[field_id_bin] = [None] * export_def.field.repetitions
+
+                                values[field_id_bin][sub_field_id] = field_value
+                        elif export_def.split:
+                            values[field_id_bin] = field_value.splitlines()
+                        else:
+                            values[field_id_bin] = field_value
+
+                for field_id_bin, export_def in self.export_definition.items():
+                    if field_id_bin in values:
+                        value = values[field_id_bin]
+
+                        if self.drop_empty_columns:
+                            table_fields_present.add(field_id_bin)
+
+                        if type(value) is list:
+                            self.output.write("ARRAY[")
+
+                            for sub_value_index, sub_value in enumerate(value):
+                                if sub_value_index != 0:
+                                    output.write(", ")
+
+                                if sub_value is not None and sub_value != '':
+                                    if not self.values_for_field_type(sub_value, export_def):
+                                        had_errors = True
+                                        output.write("NULL")
+                                        self.aggregate_errors(field_id_bin, record_id, sub_value)
+                                else:
+                                    self.output.write("NULL")
+
+                            self.output.write("]" + export_def.psql_cast + ", ")
+                        else:
+                            if not self.values_for_field_type(value, export_def):
+                                had_errors = True
+                                output.write("NULL, ")
+                                self.aggregate_errors(field_id_bin, record_id, values[field_id_bin])
+                            else:
+                                output.write(", ")
+                    else:
+                        output.write("NULL, ")
+
+                if had_errors:
+                    output.write("-1")
+                else:
+                    output.write("%d" % mod_id)
+
+                if self.processed_records == self.records_to_process_count:
+                    output.write(');\n\n')
+                else:
+                    output.write('),\n(' if self.processed_records % 1000 != 0 else ');\n\n' + self.insert_statement)
 
             if self.drop_empty_columns:
                 for export_def in self.export_definition.values():
@@ -200,58 +194,72 @@ class PsqlExporter(Exporter):
         self.reset_locale()
 
         sys.stdout.flush()
-        self.logging.info("exported %d records" % self.exported_records)
-
+        self.logging.info("exported %d records" % self.processed_records)
 
     def values_for_field_type(self, value, export_def):
-        if type(value) is list:
-            sub_values = []
-
-            for sub_value in value:
-                if sub_value is not None and sub_value != '':
-                    sub_values.append(self.values_for_field_type(sub_value, export_def))
-                else:
-                    sub_values.append("NULL")
-
-            return "ARRAY[" + ", ".join(sub_values) + "]" + export_def.psql_cast
+        if type(value) is OrderedDict and b'\x01' in value and b'\xff\x00' in value:
+            value = value[b'\x01'].decode(self.fp5file.encoding)
+        else:
+            value = value.decode(self.fp5file.encoding)
 
         if value is None:
-            return "NULL"
-
+            self.output.write("NULL")
+            return True
         if export_def.psql_type == "text":
-            return "E'%s'" % value.translate(self.trans)
+            self.output.write("E'%s'" % value.translate(self.trans))
+            return True
         elif export_def.psql_type == "integer":
-            return str(int(value))
+            try:
+                self.output.write(str(int(value)))
+                return True
+            except ValueError:
+                return False
         elif export_def.psql_type == "numeric":
-            return str(locale.atof(value))
+            try:
+                self.output.write(str(locale.atof(value)))
+                return True
+            except ValueError:
+                return False
         elif export_def.psql_type == "date":
             date, check = self.ptd_parser.parseDT(value)
 
             if not check:
-                raise ValueError
+                return False
 
-            return "'" + str(date.date()) + "'"
+            self.output.write("'" + str(date.date()) + "'")
+            return True
         elif export_def.psql_type == "uuid":
-            return "'" + str(uuid.UUID(value)) + "'"
+            self.output.write("'" + str(uuid.UUID(value)) + "'")
+            return True
         elif export_def.psql_type == "boolean":
             if value.lower() in ('ja', 'yes', 'true', '1', 'ok'):
-                return "TRUE"
+                self.output.write("TRUE")
+                return True
             elif value.lower() in ('nein', 'no', 'false', '0', ''):
-                return "FALSE"
+                self.output.write("FALSE")
+                return True
             else:
                 raise ValueError
+
         elif export_def.is_enum:
-            catch_all = None
+            value = value.upper()
 
             for enum_key, enum_value in export_def.enum.items():
-                if '*' == enum_key:
-                    catch_all = enum_key
-                elif value.upper() in enum_value:
-                    return ("E'%s'" % enum_key.translate(self.trans) if enum_key is not None else "NULL") + export_def.psql_cast
+                if '*' != enum_key and value in enum_value:
+                    if enum_key == 'NULL':
+                        self.output.write("NULL")
+                    else:
+                        self.output.write("E'%s'" % enum_key.translate(self.trans))
 
-            if catch_all:
-                return ("E'%s'" % export_def.enum[catch_all].translate(self.trans) if export_def.enum[catch_all] is not None else "NULL") + export_def.psql_cast
+                    return True
+            else:
+                if '*' in export_def.enum:
+                    catch_all = export_def.enum['*']
 
-            raise ValueError
+                    if catch_all is None or catch_all == 'NULL':
+                        self.output.write("NULL")
+                    else:
+                        self.output.write("E'%s'" % catch_all.translate(self.trans))
 
-        return "NULL"
+                    return True
+        return False

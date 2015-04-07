@@ -1,11 +1,9 @@
-from collections import OrderedDict
+from collections import OrderedDict, deque
 import sys
 import logging
 import time
 import locale
 import parsedatetime as pdt
-
-from .blockchain import decode_vli
 
 
 class Exporter(object):
@@ -24,7 +22,10 @@ class Exporter(object):
         self.logging = logging.getLogger('fp5dump.fp5file.fp5file')
 
         self.start_time = None
-        self.eta_last_updated = None
+        self.records_per_second_samples = deque()
+        self.records_per_second_samples_acc = 0
+        self.eta_processed_count = None
+        self.last_processed_records = 0
 
         self.ptd_parser = None
 
@@ -90,7 +91,6 @@ class Exporter(object):
                                                                            field_def.field.label,
                                                                            field_def.type))
 
-
                 for record_id, error_value in sampled_errors.items():
                     error_texts.append("%s \t %s" % (record_id, error_value))
 
@@ -99,27 +99,36 @@ class Exporter(object):
     def update_progress(self):
         self.processed_records += 1
 
-        now = time.time()
+        if self.show_progress:
+            now = time.time()
 
-        if now - self.eta_last_updated >= 1:
-            self.eta_last_updated = now
+            if now - self.eta_last_updated >= 1:
+                self.eta_last_updated = now
 
-            padding = len(str(self.records_to_process_count))
+                if len(self.records_per_second_samples) == 60:
+                    self.records_per_second_samples_acc -= self.records_per_second_samples.popleft()
 
-            seconds_elapsed = self.eta_last_updated - self.start_time
-            seconds_remaining = (self.records_to_process_count - self.processed_records) * (seconds_elapsed / self.processed_records)
+                self.records_per_second_samples.append(self.processed_records - self.last_processed_records)
+                self.records_per_second_samples_acc += self.processed_records - self.last_processed_records
 
-            eta_string = " ETA: %d:%02d" % (seconds_remaining // 60, seconds_remaining % 60)
-            elapsed_string = " %d:%02d" % (seconds_elapsed // 60, seconds_elapsed % 60)
+                records_per_second = self.records_per_second_samples_acc // len(self.records_per_second_samples)
 
-            format_string = "%%%dd/%%d" % padding
-            progress_info = format_string % (self.processed_records, self.records_to_process_count)
+                padding = len(str(self.records_to_process_count))
 
-            progress_info += elapsed_string + eta_string + "    "
+                seconds_elapsed = self.eta_last_updated - self.start_time
+                seconds_remaining = (self.records_to_process_count - self.processed_records) // records_per_second
 
-            if self.processed_records < self.records_to_process_count:
+                records_per_second_string = " %d records/s" % records_per_second
+                eta_string = " ETA: %d:%02d" % (seconds_remaining // 60, seconds_remaining % 60)
+                elapsed_string = " %d:%02d" % (seconds_elapsed // 60, seconds_elapsed % 60)
+
+                format_string = "%%%dd/%%d" % padding
+                progress_info = format_string % (self.processed_records, self.records_to_process_count)
+
+                progress_info += " " + elapsed_string + eta_string + records_per_second_string + "  "
+
                 sys.stdout.write(progress_info)
                 sys.stdout.flush()
-                sys.stdout.write('\b' * len(progress_info))
-            else:
-                sys.stdout.flush()
+                sys.stdout.write('\b' * (len(progress_info) + 10))
+
+                self.last_processed_records = self.processed_records

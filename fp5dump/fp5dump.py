@@ -75,7 +75,6 @@ def __dump_records__(args):
         else:
             fields_to_dump = fp5file.load_export_definition(args.definition)
 
-
         if fields_to_dump is None:
             logging.warning("no fields to dump")
 
@@ -170,13 +169,13 @@ def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connec
                                       (e.object_catalog, e.object_schema, e.object_name, e.object_type, e.collection_type_identifier))
                                       WHERE table_schema = %s AND table_name = %s;""", (schema, fp5file.db_name))
 
-                    column_infos = set(column_info for column_info in cursor.fetchall())
+                    present_column_infos = set(column_info for column_info in cursor.fetchall())
 
-                    normalized_dest_column_infos = [('fm_id', 'bigint'), ('fm_mod_id', 'bigint')]
+                    normalized_fields_to_dump = [('fm_id', 'bigint'), ('fm_mod_id', 'bigint')]
                     for (field_id_bin, field_def) in fields_to_dump.items():
-                        normalized_dest_column_infos.append((fp5file.fields[field_id_bin].label, field_def.psql_cast[2:] if field_def.is_array or field_def.is_enum else field_def.psql_type))
+                        normalized_fields_to_dump.append((fp5file.fields[field_id_bin].label, field_def.psql_cast[2:] if field_def.is_array or field_def.is_enum else field_def.psql_type))
 
-                    if set(column_infos) != set(normalized_dest_column_infos):
+                    if not set(present_column_infos).issuperset(set(normalized_fields_to_dump)):
                         logging.info("the table to be updated has a different set of columns then the requested export definition")
 
                         return 'full', None
@@ -195,11 +194,12 @@ def __update_records_determine_action__(fp5file, fields_to_dump, psycopg2_connec
                         try:
                             index = fp5file.records_index.index(id[0])
 
-                            first_record_to_process = fp5file.records_index[index+1]
+                            first_record_to_process = fp5file.records_index[index + 1]
 
                             return 'partial-update', first_record_to_process
                         except ValueError:
                             continue
+
 
 def __update_records__(args):
     with FP5File(args.input.name, encoding=args.encoding) as fp5file:
@@ -233,12 +233,14 @@ def __update_records__(args):
                                                         schema=args.schema,
                                                         show_progress=args.progress,
                                                         table_name=args.table)
+
         elif action == 'update':
             return fp5file.update_records_into_postgres(fields_to_dump,
                                                         psycopg2_connect_string=args.pg,
                                                         schema=args.schema,
                                                         show_progress=args.progress,
                                                         table_name=args.table)
+
         elif action == 'partial-update':
             return fp5file.update_records_into_postgres(fields_to_dump,
                                                         psycopg2_connect_string=args.pg,
@@ -284,8 +286,8 @@ def main():
 
     sub_parsers = main_parser.add_subparsers(dest='action')
 
-
     # list-fields
+
     list_fields_parser = sub_parsers.add_parser('list-fields',
                                                 help='lists the field and their type of a fp5 file')
 
@@ -293,7 +295,7 @@ def main():
                                     help='the fp5 file to list the fields from')
 
     list_fields_parser.add_argument('--encoding', nargs='?', default=None,
-                                       help='the encoding to interpret strings defaults to "latin_1"')
+                                    help='the encoding to interpret strings defaults to "latin_1"')
 
     list_fields_parser.add_argument('--show-unstored', action='store_true',
                                     help='show only unstored fields')
@@ -305,16 +307,16 @@ def main():
                                              'CONTAINER'],
                                     help='show only fields with these types')
 
-
     # count-records
+
     count_records_parser = sub_parsers.add_parser('count-records',
                                                   help='counts the records of a fp5 file')
 
     count_records_parser.add_argument('input', type=argparse.FileType('r'),
                                       help='the fp5 file to count the records of')
 
-
     # dump-blocks
+
     dump_blocks_parser = sub_parsers.add_parser('dump-blocks',
                                                 help='dumps the ordered data or index blocks of a fp5 file')
 
@@ -332,8 +334,8 @@ def main():
     dump_blocks_parser.add_argument('--with-path',
                                     help='dumps only data block containing nodes of a certain path. e.g. \'03/01\'')
 
-
     # dump-records
+
     dump_records_parser = sub_parsers.add_parser('dump-records',
                                                  help='dump the records of fp5 file')
 
@@ -390,15 +392,16 @@ def main():
     dump_records_parser.add_argument('--progress', '-p', action='store_true',
                                      help='show progress while dumping records')
 
-
     # insert-records
+
     insert_records_parser = sub_parsers.add_parser('insert-records',
                                                    help='inserts the records of fp5 file directly into a postgres db')
 
     insert_records_parser.add_argument('input', type=argparse.FileType('r'),
                                        help='the fp5 file to dump the records of')
 
-    insert_records_parser.add_argument('--encoding', nargs='?', default=None,
+    insert_records_parser.add_argument('--encoding', nargs='?',
+                                       default='latin_1',
                                        help='the encoding to interpret strings defaults to "latin_1"')
 
     insert_records_parser.add_argument('--locale', nargs='?',
@@ -446,14 +449,13 @@ def main():
     insert_records_parser.add_argument('--pg',
                                        help='the postgres connection string')
 
-
     insert_records_parser.add_argument('--drop-empty-columns', action='store_true',
                                        help='drop columns that have only NULL values')
 
     insert_records_parser.add_argument('--progress', '-p', action='store_true',
                                        help='show progress while dumping records')
 
-    # update-last-records
+    # update-records
     update_records_parser = sub_parsers.add_parser('update-records',
                                                    help='updates an existing table by getting the last record id in '
                                                         'a table and only inserts records from the file with bigger'
@@ -465,7 +467,8 @@ def main():
     update_records_parser.add_argument('--limit-updated-rows', default=0, type=int,
                                        help='checks only the last n rows for potential update')
 
-    update_records_parser.add_argument('--encoding', nargs='?', default=None,
+    update_records_parser.add_argument('--encoding', nargs='?',
+                                       default='latin_1',
                                        help='the encoding to interpret strings defaults to "latin_1"')
 
     update_records_parser.add_argument('--locale', nargs='?',

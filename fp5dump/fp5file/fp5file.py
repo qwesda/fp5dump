@@ -104,11 +104,11 @@ class FP5File(object):
 
                 if type(sub_value) is bytes:
                     if len(sub_value) > 40:
-                        print((level+1) * "  ", sub_key_str, sub_value, "...")
+                        print((level + 1) * "  ", sub_key_str, sub_value, "...")
                     else:
-                        print((level+1) * "  ", sub_key_str, sub_value)
+                        print((level + 1) * "  ", sub_key_str, sub_value)
                 elif sub_value is None:
-                    print((level+1) * "  ", sub_key_str, sub_value)
+                    print((level + 1) * "  ", sub_key_str, sub_value)
                 elif type(sub_value) is OrderedDict:
                     FP5File.__print_node__(sub_key, sub_value, value_limit, level=level + 1)
 
@@ -118,47 +118,8 @@ class FP5File(object):
                     print((level + 1) * "  ", "...")
                     break
 
-    def test_block_lookup(self):
-        test_search_paths = [
-            (b'\x01', True),
-            (b'\x02', True),
-            ([b'\x03', b'\x01'], False),
-            ([b'\x03', b'\x02'], False),
-            ([b'\x03', b'\x03'], False),
-            ([b'\x04', b'\x01'], False),
-            ([b'\x04', b'\x03'], False),
-            ([b'\x04', b'\x05'], False),
-            (b'\x05', True),
-            (b'\x06', True),
-            (b'\x0A', True),
-            (b'\x0B', True),
-            (b'\x0C', True),
-            (b'\x0D', True),
-            (b'\x0E', True),
-            (b'\x11', True),
-            (b'\x17', True),
-            (b'\x17/\x05', False),
-            (b'\x17/\x0E', False),
-            (b'\x17/\x0E', False),
-            (b'\x19', True),
-            (b'\x1F', True),
-            (b'\x20', True),
-            (b'\x21', True),
-            (b'\xFB', True),
-        ]
-
-        for (test_search_path, yield_children) in test_search_paths:
-            print(test_search_path)
-
-            if yield_children:
-                for (ref, data) in self.data.subnodes(test_search_path):
-                    self.__print_node__(ref, data, value_limit=2)
-            else:
-                data = self.data.node(test_search_path)
-                self.__print_node__(b'', data, value_limit=2, level=0)
-
     def dump_structure(self):
-        for (ref, data) in self.data.subnodes(b''):
+        for (ref, data) in self.data.sub_nodes(b''):
             self.__print_node__(ref, data, value_limit=2)
 
     def close(self):
@@ -325,11 +286,13 @@ class FP5File(object):
                 exclude = True
 
             if include and not exclude:
-                export_definition[field.field_id_bin] = FieldExportDefinition(field_id, field,
-                        field.psql_type if not treat_all_as_string else "text",
-                        field.psql_type if not treat_all_as_string else "text", 0x19,
-                        field.psql_cast if not treat_all_as_string else ("::text" "[]" if self.repetitions == 0 else ":text[]"),
-                        field.repetitions > 1, False, None, False, None, field_pos)
+                export_definition[field.field_id_bin] = FieldExportDefinition(field_id,
+                                                                              field,
+                                                                              field.psql_type if not treat_all_as_string else "text",
+                                                                              field.psql_type if not treat_all_as_string else "text",
+                                                                              field.psql_cast if not treat_all_as_string else ("::text" if field.repetitions == 0 else "::text[]"),
+                                                                              field.pg_oid if not treat_all_as_string else 0x19,
+                                                                              field.repetitions > 1, False, None, False, None, field_pos)
 
                 field_pos += 1
 
@@ -356,7 +319,6 @@ class FP5File(object):
                     self.logging.error("invalid locale '%s' specified" % yaml_definition['locale'])
 
                     return None
-
 
             if 'encoding' in yaml_definition:
                 try:
@@ -419,6 +381,8 @@ class FP5File(object):
                             if field.repetitions > 1:
                                 (field_def['psql_type'], field_def['subscript']) = \
                                     subscript_check.match(column_type).groups()
+
+                                field_def['subscript'] = int(field_def['subscript'])
                             else:
                                 self.logging.warning("subscript specified (%s) for non array field %s" % (
                                     field_def['type'], field.label))
@@ -470,8 +434,6 @@ class FP5File(object):
                         elif field_def['is_array']:
                             field_def['psql_cast'] = "::%s[]" % (field_def['psql_type'])
 
-
-
                         if field_def['psql_type'] == "text":
                             field_def['pg_oid'] = 0x19
                         elif field_def['psql_type'] == "integer":
@@ -482,6 +444,8 @@ class FP5File(object):
                             field_def['pg_oid'] = 0x06A4
                         elif field_def['psql_type'] == "date":
                             field_def['pg_oid'] = 0x043A
+                        elif field_def['psql_type'] == "time":
+                            field_def['pg_oid'] = 0x043B
                         elif field_def['psql_type'] == "uuid":
                             field_def['pg_oid'] = 0x0B86
                         elif field_def['psql_type'] == "boolean":
@@ -510,7 +474,7 @@ class FP5File(object):
             pos = 0x800
 
             (deleted_flag, self.block_chain_levels, prev_id, self.largest_block_id) \
-                    = struct.unpack_from(">BBII", self.file.read(0x0A))
+                = struct.unpack_from(">BBII", self.file.read(0x0A))
 
             self.block_prev_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
             self.block_id_to_block_pos = array('I', b'\x00\x00\x00\x00' * (self.largest_block_id + 1))
@@ -533,8 +497,9 @@ class FP5File(object):
 
                 if deleted_flag != 0xff:
                     if prev_id == 0x00000000:
-                        self.block_chains[level].first_block_pos = pos
-                        self.block_chains[level].length += 1
+                        if not self.block_chains[level].first_block_pos:
+                            self.block_chains[level].first_block_pos = pos
+                            self.block_chains[level].length += 1
                     else:
                         self.block_chains[level].length += 1
 
@@ -767,7 +732,7 @@ class FP5File(object):
 
         self.fields = {}
 
-        for (field_name, field_id_bin) in self.data.subnodes(b'\x03/\x01'):
+        for (field_name, field_id_bin) in self.data.sub_nodes(b'\x03/\x01'):
             field_id = decode_vli(field_id_bin[1:])
             field_id_bin = field_id_bin[1:]
 
@@ -776,8 +741,7 @@ class FP5File(object):
 
             self.fields[field_id_bin] = DataField(field_id, field_id_bin, field_name)
 
-        for (field_type, fields) in self.data.subnodes(b'\x03/\x02'):
-            field_id = decode_vli(field_id_bin[1:])
+        for (field_type, fields) in self.data.sub_nodes(b'\x03/\x02'):
             field_type = field_type[0]
 
             for field_id_bin in fields.keys():
@@ -786,16 +750,15 @@ class FP5File(object):
                 else:
                     print("unhandled field id in field type index", field_id)
 
-        for (field_nr, field_id_bin) in self.data.subnodes(b'\x03/\x03'):
-            field_id = decode_vli(field_id_bin[1:])
+        for (field_nr, field_id_bin) in self.data.sub_nodes(b'\x03/\x03'):
             field_id_bin = field_id_bin[1:]
 
             if field_id_bin in self.fields:
                 self.fields[field_id_bin].order = field_nr
             else:
-                print("unhandled field id in field type index", field_id)
+                print("unhandled field id in field type index", field_id_bin)
 
-        for (field_id_bin, options) in self.data.subnodes(b'\x03/\x05'):
+        for (field_id_bin, options) in self.data.sub_nodes(b'\x03/\x05', token_ids_to_return=set({b'\x01', b'\x02'})):
             if field_id_bin in self.fields:
                 field = self.fields[field_id_bin]
 
@@ -818,8 +781,11 @@ class FP5File(object):
     def get_record_index(self):
         self.logging.debug("get_record_index")
 
-        self.records_index = list(decode_vli(x) for x in self.data.node(b'\x0D').keys())
-        self.records_count = len(self.records_index)
+        node = self.data.node(b'\x0D')
+
+        if node:
+            self.records_index = list(decode_vli(x) for x in node.keys())
+            self.records_count = len(self.records_index)
 
     def insert_records_into_postgres(self, fields_to_dump, first_record_to_process=None, table_name=None,
                                      psycopg2_connect_string=None, schema=None, show_progress=False,
@@ -870,6 +836,14 @@ class FP5File(object):
         if filename is None:
             filename = os.path.join(self.dirname, self.basename + '.psql')
 
+        for field_to_dump in fields_to_dump.values():
+            if field_to_dump.is_enum:
+                for (enum_key, enum_values) in list(field_to_dump.enum.items()):
+                    del field_to_dump.enum[enum_key]
+
+                    field_to_dump.enum[enum_key.decode(self.encoding)] = [enum_value.decode(self.encoding) for enum_value in enum_values]
+
+
         exporter = PsqlExporter(self, fields_to_dump, filename,
                                 first_record_to_process=first_record_to_process,
                                 table_name=table_name,
@@ -911,8 +885,7 @@ class __OrderedDictYAMLLoader__(yaml.Loader):
         if isinstance(node, yaml.MappingNode):
             self.flatten_mapping(node)
         else:
-            raise yaml.constructor.ConstructorError(None, None,
-                'expected a mapping node, but found %s' % node.id, node.start_mark)
+            raise yaml.constructor.ConstructorError(None, None, 'expected a mapping node, but found %s' % node.id, node.start_mark)
 
         mapping = OrderedDict()
         for key_node, value_node in node.value:
@@ -920,8 +893,7 @@ class __OrderedDictYAMLLoader__(yaml.Loader):
             try:
                 hash(key)
             except TypeError as exc:
-                raise yaml.constructor.ConstructorError('while constructing a mapping',
-                    node.start_mark, 'found unacceptable key (%s)' % exc, key_node.start_mark)
+                raise yaml.constructor.ConstructorError('while constructing a mapping', node.start_mark, 'found unacceptable key (%s)' % exc, key_node.start_mark)
             value = self.construct_object(value_node, deep=deep)
             mapping[key] = value
         return mapping
