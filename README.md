@@ -1,9 +1,14 @@
 # Fp5Dump
 
-Fp5Dump allows you to parse, read and export FileMaker `.fp5` files to postgres `.psql` files.
- 
-Since FileMaker 5/6 stores all values as strings and does not enforce a particular 
-format for dates/numbers all fields will be dumped as `TEXT` or `TEXT[]` for *repeated fields*.
+Fp5Dump allows you to parse, read and export FileMaker `.fp5` and `.fp3` files to postgres `.psql` files or 
+insert/update them to a local postgres database.
+
+The Filemaker types will be mapped `TEXT`, `NUMBER`, `DATE`, `TIME` the corresponding postgres types 
+(`numeric` is used for `NUMBER` fields) unless the `--assume-string` option is specified.  
+FileMaker stores all values as strings and does not enforce a particular format for dates/numbers. 
+The `--locale` option can be used if the values for numbers/dates are in a locale specific format, e.g.:
+`-locale=de_DE` will allow dates like `20.12.2014` and numbers like `123,456`.  
+*repeated fields* will be mapped to one dimentional arrays with a fixed size.
 
 Supported field types are `TEXT`, `NUMBER`, `DATE`, `TIME`, `CALC`, `SUMMARY`. Fields of type 
 `CALC` or `SUMMARY` can only be dumped if they are configured to be stored in the file.
@@ -26,14 +31,14 @@ Supported field types are `TEXT`, `NUMBER`, `DATE`, `TIME`, `CALC`, `SUMMARY`. F
 `-v` show info messages  
 `-vv` show debug messages 
 
-**action** is one of `list-fields` `count-records` `dump-blocks` `dump-records`
+**action** is one of `list-fields` `count-records` `dump-blocks` `dump-records` `insert-records` `update-records`
 
-**file** a readable filemaker 5/6 file
+**file** a readable fp5/fp3 file
 
  
 ### list-fields
 
-lists the fields in a fp5 file
+lists the fields in a filemaker file
 
 ```
 fp5dump list-fields database.fp5 
