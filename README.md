@@ -117,3 +117,42 @@ exclusions overwrite inclusions
 `type` *one or more of* `TEXT` `NUMBER` `DATE` `TIME` `CALC` `SUMMARY` `GLOBAL` `CONTAINER`  
 excludes fields of certain types  
 exclusions overwrite inclusions
+ 
+
+### insert-records
+
+inserts the records of fp5 file unto a postgres database
+
+```
+fp5dump insert-records database.fp5 
+        [--pg <postgres-connection-string>] [--encoding <encoding>] [--progress]
+        [--include-fields <name>] [--include-fields-like <regex>] 
+        [--ignore-fields <name>] [--ignore-fields-like <regex>] 
+        [--ignore-field-types <type>]
+```
+
+**``--pg <postgres-connection-string>`**
+strings used to connect to postgres – should look like  
+  `dbname='mydb' user='me' password='secret' host='localhost' port='5432'`
+ 
+**`--encoding <encoding>`**  
+the encoding to interpret strings values  
+any [valid python encoding](https://docs.python.org/3/library/codecs.html#standard-encodings) can be chosen. defaults to "latin_1"
+ 
+
+
+**`-p` `--progress`**  
+shows the progress and estimated time to completion
+
+**`--include-fields <name>`** and **`--include-fields-like <regex>`**  
+includes fields in the dump which are specified by `name` or which match one of the `regex`  
+if neither are specified all fields will be dumped 
+
+**`--ignore-fields <name>`** and **`--ignore-fields-like <regex>`**  
+excludes fields in the dump which are specified by `name` or which match one of the `regex`  
+exclusions overwrite inclusions
+
+**`--ignore-field-types <type>`**  
+`type` *one or more of* `TEXT` `NUMBER` `DATE` `TIME` `CALC` `SUMMARY` `GLOBAL` `CONTAINER`  
+excludes fields of certain types  
+exclusions overwrite inclusions
