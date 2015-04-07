@@ -3,12 +3,12 @@
 Fp5Dump allows you to parse, read and export FileMaker `.fp5` and `.fp3` files to postgres `.psql` files or 
 insert/update them to a local postgres database.
 
-The Filemaker types will be mapped `TEXT`, `NUMBER`, `DATE`, `TIME` the corresponding postgres types 
+The Filemaker types `TEXT`, `NUMBER`, `DATE`, `TIME` will be mapped the corresponding postgres types 
 (`numeric` is used for `NUMBER` fields) unless the `--assume-string` option is specified.  
 FileMaker stores all values as strings and does not enforce a particular format for dates/numbers. 
 The `--locale` option can be used if the values for numbers/dates are in a locale specific format, e.g.:
-`-locale=de_DE` will allow dates like `20.12.2014` and numbers like `123,456`.  
-*repeated fields* will be mapped to one dimentional arrays with a fixed size.
+`--locale=de_DE` will allow dates like `20.12.2014` and numbers like `123,456`.  
+*Repeated fields* will be mapped to one dimentional arrays of a fixed size.
 
 Supported field types are `TEXT`, `NUMBER`, `DATE`, `TIME`, `CALC`, `SUMMARY`. Fields of type 
 `CALC` or `SUMMARY` can only be dumped if they are configured to be stored in the file.
