@@ -6,8 +6,8 @@ from setuptools import setup, find_packages
 
 _version_re = re.compile(r'__version__\s*=\s*\'\s*(\d+\.\d+\.\d+)\s*\'')
 
-with open(os.path.join(os.path.dirname(__file__), 'fp5dump/__init__.py'), 'rb') as f:
-    version = _version_re.search(f.read().decode('utf-8')).group(1)
+with open(os.path.join(os.path.dirname(__file__), 'fp5dump/__init__.py'), encoding='utf-8') as f:
+    version = _version_re.search(f.read()).group(1)
 
 description = 'A tool for dumping the content on FileMaker .fp5 files'
 
@@ -21,7 +21,7 @@ setup(
     url='https://github.com/qwesda/Fp5Dump',
     packages=find_packages(),
     description=description,
-    long_description=open(os.path.join(os.path.dirname(__file__), 'README.md'), 'rb').read().decode('utf-8'),
+    long_description=open(os.path.join(os.path.dirname(__file__), 'README.md'), encoding='utf-8').read(),
     install_requires=[
         'psycopg2 >= 2.5.4',
         'PyYAML >= 3.11',
