@@ -21,7 +21,7 @@ setup(
     url='https://github.com/qwesda/Fp5Dump',
     packages=find_packages(),
     description=description,
-    long_description=open(os.path.join(os.path.dirname(__file__), 'README.md')).read(),
+    long_description=open(os.path.join(os.path.dirname(__file__), 'README.md'), 'rb').read().decode('utf-8'),
     install_requires=[
         'psycopg2 >= 2.5.4',
         'PyYAML >= 3.11',
