@@ -24,6 +24,7 @@ setup(
     long_description=open(os.path.join(os.path.dirname(__file__), 'README.md'), encoding='utf-8').read(),
     install_requires=[
         'psycopg2 >= 2.5.4',
+        'psycopg2-binary >= 2.5.4',
         'PyYAML >= 3.11',
         'parsedatetime >= 1.4'
     ],
