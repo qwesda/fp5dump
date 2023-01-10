@@ -748,7 +748,7 @@ class FP5File(object):
                 if field_id_bin in self.fields:
                     self.fields[field_id_bin].type = field_type
                 else:
-                    print("unhandled field id in field type index", field_id)
+                    print("unhandled field id in field type index", field_id_bin)
 
         for (field_nr, field_id_bin) in self.data.sub_nodes(b'\x03/\x03'):
             field_id_bin = field_id_bin[1:]
@@ -776,7 +776,7 @@ class FP5File(object):
 
                     field.repetitions = flags_bin[11]
             else:
-                print("unhandled field id in field type index", field_id)
+                print("unhandled field id in field type index", field_id_bin)
 
     def get_record_index(self):
         self.logging.debug("get_record_index")
